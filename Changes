@@ -1,0 +1,8 @@
+Revision history for Perl extension Async::Interrupt.
+
+0.02  Thu Jul  2 17:17:30 CEST 2009
+	- first release, rather untested.
+
+0.01  Thu Jul  2 13:18:00 CEST 2009
+	- original version; cloned from Convert::Scalar.
+
