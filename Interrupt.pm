@@ -52,7 +52,7 @@ package Async::Interrupt;
 no warnings;
 
 BEGIN {
-   $VERSION = '0.02';
+   $VERSION = '0.03';
 
    require XSLoader;
    XSLoader::load Async::Interrupt::, $VERSION;

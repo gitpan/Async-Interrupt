@@ -8,6 +8,20 @@ static int *sig_pending, *psig_pend; /* make local copies because of missing THX
 static Sighandler_t old_sighandler;
 static atomic_t async_pending;
 
+#define PERL_VERSION_ATLEAST(a,b,c)                             \
+  (PERL_REVISION > (a)                                          \
+   || (PERL_REVISION == (a)                                     \
+       && (PERL_VERSION > (b)                                   \
+           || (PERL_VERSION == (b) && PERL_SUBVERSION >= (c)))))
+
+#if defined(HAS_SIGACTION) && defined(SA_SIGINFO)
+# define HAS_SA_SIGINFO 1
+#endif
+
+#if !PERL_VERSION_ATLEAST(5,10,0)
+# undef HAS_SA_SIGINFO
+#endif
+
 static int
 extract_fd (SV *fh, int wr)
 {
@@ -149,7 +163,7 @@ handle_asyncs (void)
     }
 }
 
-#if defined(HAS_SIGACTION) && defined(SA_SIGINFO)
+#if HAS_SA_SIGINFO
 static Signal_t async_sighandler (int signum, siginfo_t *si, void *sarg)
 {
   if (signum == 9)
@@ -195,7 +209,7 @@ SV *
 _alloc (SV *cb, void *c_cb, void *c_arg, SV *fh_r, SV *fh_w)
 	CODE:
 {
-        SV *cv   = SvOK (cb) ? SvREFCNT_inc_NN (get_cb (cb)) : 0;
+        SV *cv   = SvOK (cb) ? SvREFCNT_inc (get_cb (cb)) : 0;
         int fd_r = SvOK (fh_r) ? extract_fd (fh_r, 0) : -1;
         int fd_w = SvOK (fh_w) ? extract_fd (fh_w, 1) : -1;
   	struct async *async;
