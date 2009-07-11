@@ -1,7 +1,16 @@
 Revision history for Perl extension Async::Interrupt.
 
+TODO: allow A::I to create the pipe, thereby allowing it to use eventfd.
+
+0.04  Sun Jul 12 00:24:02 CEST 2009
+	- added ability to block the pipe write temporarily.
+        - added the ability to call signal when the process receives
+          a (POSIX) signal.
+	- removed debugging output in constructor.
+        - support eventfd instead of a pipe (untested).
+
 0.03  Fri Jul  3 23:11:05 CEST 2009
-	- port to perl <= 5.8.8.
+	- port to perl <= 5.8.9.
 
 0.02  Thu Jul  2 17:17:30 CEST 2009
 	- first release, rather untested.

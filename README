@@ -84,6 +84,16 @@ DESCRIPTION
             functions and modify any perl data structures (in which case the
             requirements set out for "cb" apply as well).
 
+        signal => $signame_or_value
+            When this parameter is specified, then the Async::Interrupt will
+            hook the given signal, that is, it will effectively call
+            "->signal (0)" each time the given signal is caught by the
+            process.
+
+            Only one async can hook a given signal, and the signal will be
+            restored to defaults when the Async::Interrupt object gets
+            destroyed.
+
         pipe => [$fileno_or_fh_for_reading, $fileno_or_fh_for_writing]
             Specifies two file descriptors (or file handles) that should be
             signalled whenever the async interrupt is signalled. This means
@@ -92,8 +102,11 @@ DESCRIPTION
             unlikely but possible that multiple octets are written. It is
             required that the file handles are both in nonblocking mode.
 
-            (You can get a portable pipe and set non-blocking mode portably
-            by using e.g. AnyEvent::Util from the AnyEvent distribution).
+            You can get a portable pipe and set non-blocking mode portably
+            by using e.g. AnyEvent::Util from the AnyEvent distribution.
+
+            It is also possible to pass in a linux eventfd as both read and
+            write handle (which is faster than a pipe).
 
             The object will keep a reference to the file handles.
 
@@ -152,6 +165,17 @@ DESCRIPTION
 
         This is the recommended (and fastest) way to implement critical
         sections.
+
+    $async->pipe_enable
+    $async->pipe_disable
+        Enable/disable signalling the pipe when the interrupt occurs
+        (default is enabled). Writing to a pipe is relatively expensive, so
+        it can be disabled when you know you are not waiting for it (for
+        example, with EV you could disable the pipe in a check watcher, and
+        enable it in a prepare watcher).
+
+        Note that when "fd_disable" is in effect, no attempt to read from
+        the pipe will be done.
 
 EXAMPLE
     There really should be a complete C/XS example. Bug me about it.

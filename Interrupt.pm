@@ -52,7 +52,7 @@ package Async::Interrupt;
 no warnings;
 
 BEGIN {
-   $VERSION = '0.03';
+   $VERSION = '0.04';
 
    require XSLoader;
    XSLoader::load Async::Interrupt::, $VERSION;
@@ -108,6 +108,15 @@ Async::Interrupt). The callback itself runs as part of the perl context,
 so you can call any perl functions and modify any perl data structures (in
 which case the requirements set out for C<cb> apply as well).
 
+=item signal => $signame_or_value
+
+When this parameter is specified, then the Async::Interrupt will hook the
+given signal, that is, it will effectively call C<< ->signal (0) >> each time
+the given signal is caught by the process.
+
+Only one async can hook a given signal, and the signal will be restored to
+defaults when the Async::Interrupt object gets destroyed.
+
 =item pipe => [$fileno_or_fh_for_reading, $fileno_or_fh_for_writing]
 
 Specifies two file descriptors (or file handles) that should be signalled
@@ -117,8 +126,11 @@ read again. Due to races, it is unlikely but possible that multiple octets
 are written. It is required that the file handles are both in nonblocking
 mode.
 
-(You can get a portable pipe and set non-blocking mode portably by using
-e.g. L<AnyEvent::Util> from the L<AnyEvent> distribution).
+You can get a portable pipe and set non-blocking mode portably by using
+e.g. L<AnyEvent::Util> from the L<AnyEvent> distribution.
+
+It is also possible to pass in a linux eventfd as both read and write
+handle (which is faster than a pipe).
 
 The object will keep a reference to the file handles.
 
@@ -132,7 +144,7 @@ frameworks as well.
 sub new {
    my ($class, %arg) = @_;
 
-   bless \(_alloc $arg{cb}, @{$arg{c_cb}}[0,1], @{$arg{pipe}}[0,1]), $class
+   bless \(_alloc $arg{cb}, @{$arg{c_cb}}[0,1], @{$arg{pipe}}[0,1], $arg{signal}), $class
 }
 
 =item ($signal_func, $signal_arg) = $async->signal_func
@@ -190,6 +202,19 @@ the current scope is exited (via an exception, by canceling the Coro
 thread, by calling last/goto etc.).
 
 This is the recommended (and fastest) way to implement critical sections.
+
+=item $async->pipe_enable
+
+=item $async->pipe_disable
+
+Enable/disable signalling the pipe when the interrupt occurs (default is
+enabled). Writing to a pipe is relatively expensive, so it can be disabled
+when you know you are not waiting for it (for example, with L<EV> you
+could disable the pipe in a check watcher, and enable it in a prepare
+watcher).
+
+Note that when C<fd_disable> is in effect, no attempt to read from the
+pipe will be done.
 
 =cut
 

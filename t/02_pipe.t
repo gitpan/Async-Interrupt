@@ -11,7 +11,7 @@ unless (socketpair $pr, $pw, Socket::AF_UNIX (), Socket::SOCK_STREAM (), 0) {
    exit;
 }
    
-print "1..10\n"; $|=1;
+print "1..12\n"; $|=1;
 
 use Async::Interrupt;
 
@@ -44,3 +44,14 @@ $ai->signal (9);
 
 my $n = select $vR=$vr, undef, undef, 0;
 print $n == 0 ? "" : "not ", "ok 10 # $n\n";
+
+$ai->pipe_disable;
+$ai->scope_block;
+
+$ai->signal (12);
+
+my $n = select $vR=$vr, undef, undef, 0;
+print $n == 0 ? "" : "not ", "ok 11 # $n\n";
+
+undef $ai; # will cause signal to be sent
+
