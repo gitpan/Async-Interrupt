@@ -5,6 +5,7 @@ COPYING
 Makefile.PL
 Interrupt.pm
 Interrupt.xs
+typemap
 t/00_load.t
 t/01_basic.t
 t/02_pipe.t

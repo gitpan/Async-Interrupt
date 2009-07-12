@@ -12,25 +12,72 @@ This module implements a single feature only of interest to advanced perl
 modules, namely asynchronous interruptions (think "UNIX signals", which
 are very similar).
 
-Sometimes, modules wish to run code asynchronously (in another thread),
-and then signal the perl interpreter on certain events. One common way is
-to write some data to a pipe and use an event handling toolkit to watch
-for I/O events. Another way is to send a signal. Those methods are slow,
-and in the case of a pipe, also not asynchronous - it won't interrupt a
-running perl interpreter.
+Sometimes, modules wish to run code asynchronously (in another thread,
+or from a signal handler), and then signal the perl interpreter on
+certain events. One common way is to write some data to a pipe and use an
+event handling toolkit to watch for I/O events. Another way is to send
+a signal. Those methods are slow, and in the case of a pipe, also not
+asynchronous - it won't interrupt a running perl interpreter.
 
 This module implements asynchronous notifications that enable you to
-signal running perl code form another thread, asynchronously, without
-issuing syscalls.
+signal running perl code from another thread, asynchronously, and
+sometimes even without using a single syscall.
 
-It works by creating an C<Async::Interrupt> object for each such use. This
-object stores a perl and/or a C-level callback that is invoked when the
-C<Async::Interrupt> object gets signalled. It is executed at the next time
-the perl interpreter is running (i.e. it will interrupt a computation, but
-not an XS function or a syscall).
+=head2 USAGE SCENARIOS
+
+=over 4
+
+=item Race-free signal handling
+
+There seems to be no way to do race-free signal handling in perl: to
+catch a signal, you have to execute Perl code, and between entering the
+interpreter C<select> function (or other blocking functions) and executing
+the select syscall is a small but relevant timespan during which signals
+will be queued, but perl signal handlers will not be executed and the
+blocking syscall will not be interrupted.
+
+You can use this module to bind a signal to a callback while at the same
+time activating an event pipe that you can C<select> on, fixing the race
+completely.
+
+This can be used to implement the signal hadling in event loops,
+e.g. L<AnyEvent>, L<POE>, L<IO::Async::Loop> and so on.
+
+=item Background threads want speedy reporting
+
+Assume you want very exact timing, and you can spare an extra cpu core
+for that. Then you can run an extra thread that signals your perl
+interpreter. This means you can get a very exact timing source while your
+perl code is number crunching, without even using a syscall to communicate
+between your threads.
+
+For example the deliantra game server uses a variant of this technique
+to interrupt background processes regularly to send map updates to game
+clients.
+
+L<IO::AIO> and L<BDB> could also use this to speed up result reporting.
+
+=item Speedy event loop invocation
+
+One could use this module e.g. in L<Coro> to interrupt a running coro-thread
+and cause it to enter the event loop.
+
+Or one could bind to C<SIGIO> and tell some important sockets to send this
+signal, causing the event loop to be entered to reduce network latency.
+
+=back
+
+=head2 HOW TO USE
+
+You can use this module by creating an C<Async::Interrupt> object for each
+such event source. This object stores a perl and/or a C-level callback
+that is invoked when the C<Async::Interrupt> object gets signalled. It is
+executed at the next time the perl interpreter is running (i.e. it will
+interrupt a computation, but not an XS function or a syscall).
 
 You can signal the C<Async::Interrupt> object either by calling it's C<<
-->signal >> method, or, more commonly, by calling a C function.
+->signal >> method, or, more commonly, by calling a C function. There is
+also the built-in (POSIX) signal source.
 
 The C<< ->signal_func >> returns the address of the C function that is to
 be called (plus an argument to be used during the call). The signalling
@@ -38,10 +85,10 @@ function also takes an integer argument in the range SIG_ATOMIC_MIN to
 SIG_ATOMIC_MAX (guaranteed to allow at least 0..127).
 
 Since this kind of interruption is fast, but can only interrupt a
-I<running> interpreter, there is optional support for also signalling a
-pipe - that means you can also wait for the pipe to become readable (e.g.
-via L<EV> or L<AnyEvent>). This, of course, incurs the overhead of a
-C<read> and C<write> syscall.
+I<running> interpreter, there is optional support for signalling a pipe
+- that means you can also wait for the pipe to become readable (e.g. via
+L<EV> or L<AnyEvent>). This, of course, incurs the overhead of a C<read>
+and C<write> syscall.
 
 =over 4
 
@@ -52,7 +99,7 @@ package Async::Interrupt;
 no warnings;
 
 BEGIN {
-   $VERSION = '0.04';
+   $VERSION = '0.041';
 
    require XSLoader;
    XSLoader::load Async::Interrupt::, $VERSION;
@@ -224,22 +271,23 @@ pipe will be done.
 
 =head1 EXAMPLE
 
-There really should be a complete C/XS example. Bug me about it.
+There really should be a complete C/XS example. Bug me about it. Better
+yet, create one.
 
 =head1 IMPLEMENTATION DETAILS AND LIMITATIONS
 
-This module works by "hijacking" SIGKILL, which is guaranteed to be always
-available in perl, but also cannot be caught, so is always available.
+This module works by "hijacking" SIGKILL, which is guaranteed to always
+exist, but also cannot be caught, so is always available.
 
-Basically, this module fakes the receive of a SIGKILL signal and
-then catches it. This makes normal signal handling slower (probably
-unmeasurably), but has the advantage of not requiring a special runops nor
-slowing down normal perl execution a bit.
+Basically, this module fakes the occurance of a SIGKILL signal and
+then intercepts the interpreter handling it. This makes normal signal
+handling slower (probably unmeasurably, though), but has the advantage
+of not requiring a special runops function, nor slowing down normal perl
+execution a bit.
 
-It assumes that C<sig_atomic_t> and C<int> are both exception-safe to
-modify (C<sig_atomic_> is used by this module, and perl itself uses
-C<int>, so we can assume that this is quite portable, at least w.r.t.
-signals).
+It assumes that C<sig_atomic_t> and C<int> are both async-safe to modify
+(C<sig_atomic_> is used by this module, and perl itself uses C<int>, so we
+can assume that this is quite portable, at least w.r.t. signals).
 
 =head1 AUTHOR
 

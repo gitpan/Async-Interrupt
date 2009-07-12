@@ -1,0 +1,6 @@
+async_t *	T_ASYNC
+
+INPUT
+
+T_ASYNC
+	$var = SvASYNC ($arg);

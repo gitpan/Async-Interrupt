@@ -11,7 +11,7 @@
    },
    "generated_by" : "ExtUtils::MakeMaker version 6.50",
    "distribution_type" : "module",
-   "version" : "0.04",
+   "version" : "0.041",
    "name" : "Async-Interrupt",
    "author" : [],
    "license" : "unknown",
