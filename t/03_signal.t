@@ -1,5 +1,5 @@
-unless (exists $SIG{CHLD}) {
-   print "1..0 # SKIP no SIGCHLD - broken platform, skipping tests\n";
+unless (exists $SIG{USR1}) {
+   print "1..0 # SKIP no SIGUSR1 - broken platform, skipping tests\n";
    exit;
 }
 

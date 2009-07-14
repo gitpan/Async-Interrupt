@@ -96,13 +96,17 @@ and C<write> syscall.
 
 package Async::Interrupt;
 
-no warnings;
+use common::sense;
 
 BEGIN {
-   $VERSION = '0.041';
+   # the next line forces initialisation of internal
+   # signal handling # variables
+   $SIG{KILL} = sub { };
+
+   our $VERSION = '0.042';
 
    require XSLoader;
-   XSLoader::load Async::Interrupt::, $VERSION;
+   XSLoader::load ("Async::Interrupt", $VERSION);
 }
 
 our $DIED = sub { warn "$@" };

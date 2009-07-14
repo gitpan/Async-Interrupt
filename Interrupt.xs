@@ -2,6 +2,8 @@
 #include "perl.h"
 #include "XSUB.h"
 
+#include "schmorp.h"
+
 typedef volatile sig_atomic_t atomic_t;
 
 static int *sig_pending, *psig_pend; /* make local copies because of missing THX */
@@ -23,73 +25,17 @@ static atomic_t async_pending;
 #endif
 
 /*****************************************************************************/
-/* support stuff, copied from EV.xs mostly */
-
-static int
-extract_fd (SV *fh, int wr)
-{
-  int fd = PerlIO_fileno (wr ? IoOFP (sv_2io (fh)) : IoIFP (sv_2io (fh)));
-
-  if (fd < 0)
-    croak ("illegal fh argument, either not an OS file or read/write mode mismatch");
-
-  return fd;
-}
-
-static SV *
-get_cb (SV *cb_sv)
-{
-  HV *st;
-  GV *gvp;
-  CV *cv;
-
-  if (!SvOK (cb_sv))
-    return 0;
-
-  cv = sv_2cv (cb_sv, &st, &gvp, 0);
-
-  if (!cv)
-    croak ("Async::Interrupt callback must be undef or a CODE reference");
-
-  return (SV *)cv;
-}
-
-#ifndef SIG_SIZE
-/* kudos to Slaven Rezic for the idea */
-static char sig_size [] = { SIG_NUM };
-# define SIG_SIZE (sizeof (sig_size) + 1)
-#endif
-
-static int
-sv_signum (SV *sig)
-{
-  int signum;
-
-  SvGETMAGIC (sig);
-
-  for (signum = 1; signum < SIG_SIZE; ++signum)
-    if (strEQ (SvPV_nolen (sig), PL_sig_name [signum]))
-      return signum;
-
-  signum = SvIV (sig);
-
-  if (signum > 0 && signum < SIG_SIZE)
-    return signum;
-
-  return -1;
-}
-
-/*****************************************************************************/
 
 typedef struct {
   SV *cb;
   void (*c_cb)(pTHX_ void *c_arg, int value);
   void *c_arg;
   SV *fh_r, *fh_w;
-  int blocked;
   int signum;
+  volatile int blocked;
 
-  int fd_r, fd_w;
+  int fd_r;
+  volatile int fd_w;
   int fd_wlen;
   atomic_t fd_enable;
   atomic_t value;
@@ -117,10 +63,15 @@ async_signal (void *signal_arg, int value)
   psig_pend [9]  = 1;
   *sig_pending   = 1;
 
-  if (!pending && async->fd_w >= 0 && async->fd_enable)
-    if (write (async->fd_w, pipedata, async->fd_wlen) < 0 && errno == EINVAL)
-      /* on EINVAL we assume it's an eventfd */
-      write (async->fd_w, pipedata, (async->fd_wlen = 8));
+  {
+    int fd_w      = async->fd_w;
+    int fd_enable = async->fd_enable;
+
+    if (!pending && fd_w >= 0 && fd_enable)
+      if (write (fd_w, pipedata, async->fd_wlen) < 0 && errno == EINVAL)
+        /* on EINVAL we assume it's an eventfd */
+        write (fd_w, pipedata, (async->fd_wlen = 8));
+  }
 }
 
 static void
@@ -228,15 +179,21 @@ async_sigsend (int signum)
   async_signal (sig_async [signum], 0);
 }
 
+#define block(async) ++(async)->blocked
+
+static void
+unblock (async_t *async)
+{
+  --async->blocked;
+  if (async->pending && !async->blocked)
+    handle_async (async);
+}
+
 static void
 scope_block_cb (pTHX_ void *async_sv)
 {
   async_t *async = SvASYNC_nrv ((SV *)async_sv);
-
-  --async->blocked;
-  if (async->pending && !async->blocked)
-    handle_async (async);
-
+  unblock (async);
   SvREFCNT_dec (async_sv);
 }
 
@@ -256,9 +213,9 @@ void
 _alloc (SV *cb, void *c_cb, void *c_arg, SV *fh_r, SV *fh_w, SV *signl)
 	PPCODE:
 {
-        SV *cv   = SvOK (cb) ? SvREFCNT_inc (get_cb (cb)) : 0;
-        int fd_r = SvOK (fh_r) ? extract_fd (fh_r, 0) : -1;
-        int fd_w = SvOK (fh_w) ? extract_fd (fh_w, 1) : -1;
+        SV *cv   = SvOK (cb) ? SvREFCNT_inc (s_get_cv_croak (cb)) : 0;
+        int fd_r = SvOK (fh_r) ? s_fileno_croak (fh_r, 0) : -1;
+        int fd_w = SvOK (fh_w) ? s_fileno_croak (fh_w, 1) : -1;
   	async_t *async;
 
         Newz (0, async, 1, async_t);
@@ -273,8 +230,7 @@ _alloc (SV *cb, void *c_cb, void *c_arg, SV *fh_r, SV *fh_w, SV *signl)
         async->cb        = cv;
         async->c_cb      = c_cb;
         async->c_arg     = c_arg;
-        SvGETMAGIC (signl);
-        async->signum    = SvOK (signl) ? sv_signum (signl) : 0;
+        async->signum    = SvOK (signl) ? s_signum_croak (signl) : 0;
 
         if (async->signum)
           {
@@ -310,14 +266,12 @@ signal (async_t *async, int value = 0)
 void
 block (async_t *async)
 	CODE:
-        ++async->blocked;
+        block (async);
 
 void
 unblock (async_t *async)
 	CODE:
-        --async->blocked;
-        if (async->pending && !async->blocked)
-          handle_async (async);
+        unblock (async);
 
 void
 scope_block (SV *self)
@@ -325,7 +279,7 @@ scope_block (SV *self)
 {
 	SV *async_sv = SvRV (self);
         async_t *async = SvASYNC_nrv (async_sv);
-        ++async->blocked;
+        block (async);
 
         LEAVE; /* unfortunately, perl sandwiches XS calls into ENTER/LEAVE */
         SAVEDESTRUCTOR_X (scope_block_cb, (void *)SvREFCNT_inc (async_sv));

@@ -3,6 +3,7 @@ Changes
 MANIFEST
 COPYING
 Makefile.PL
+schmorp.h
 Interrupt.pm
 Interrupt.xs
 typemap
