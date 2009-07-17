@@ -5,6 +5,13 @@
  * This header file is a shared resource between many modules.
  */
 
+#include <signal.h>
+#include <errno.h>
+
+#ifndef _WIN32
+# include <poll.h>
+#endif
+
 /* useful stuff, used by schmorp mostly */
 
 #include "patchlevel.h"
@@ -189,12 +196,13 @@ s_gensub (pTHX_ void (*xsub)(pTHX_ CV *), void *arg)
   return newRV_noinc ((SV *)cv);
 }
 
-/** portable pipe/socketpair */
+/*****************************************************************************/
+/* portable pipe/socketpair */
 
 #ifdef USE_SOCKETS_AS_HANDLES
-# define S_TO_SOCKET(x) (win32_get_osfhandle (x))
+# define S_TO_HANDLE(x) ((HANDLE)win32_get_osfhandle (x))
 #else
-# define S_TO_SOCKET(x) (x)
+# define S_TO_HANDLE(x) ((HANDLE)x)
 #endif
 
 #ifdef _WIN32
@@ -284,12 +292,192 @@ fail:
 
 #define s_socketpair(domain,type,protocol,filedes) s_pipe (filedes)
 
+static int
+s_fd_blocking (int fd, int blocking)
+{
+  u_long nonblocking = !blocking;
+
+  return ioctlsocket ((SOCKET)S_TO_HANDLE (fd), FIONBIO, &nonblocking);
+}
+
+#define s_fd_prepare(fd) s_fd_blocking (fd, 0)
+
 #else
 
 #define s_socketpair(domain,type,protocol,filedes) socketpair (domain, type, protocol, filedes)
 #define s_pipe(filedes) pipe (filedes)
 
+static int
+s_fd_blocking (int fd, int blocking)
+{
+  return fcntl (fd, F_SETFL, blocking ? 0 : O_NONBLOCK);
+}
+
+static int
+s_fd_prepare (int fd)
+{
+  return s_fd_blocking (fd, 0)
+         || fcntl (fd, F_SETFD, FD_CLOEXEC);
+}
+
 #endif
+
+#if __linux && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 7))
+/* our minimum requirement is glibc 2.7 which has the stub, but not the header */
+# include <stdint.h>
+# ifdef __cplusplus
+extern "C" {
+# endif
+  int eventfd (unsigned int initval, int flags);
+# ifdef __cplusplus
+}
+# endif
+#else
+# define eventfd(initval,flags) -1
+#endif
+
+typedef struct {
+  int fd[2]; /* read, write fd, might be equal */
+  int len; /* write length (1 pipe/socket, 8 eventfd) */
+  volatile sig_atomic_t sent;
+} s_epipe;
+
+static int
+s_epipe_new (s_epipe *epp)
+{
+  s_epipe ep;
+
+  ep.fd [0] = ep.fd [1] = eventfd (0, 0);
+
+  if (ep.fd [0] >= 0)
+    {
+      s_fd_prepare (ep.fd [0]);
+      ep.len = 8;
+    }
+  else
+    {
+      if (s_pipe (ep.fd))
+        return -1;
+
+      if (s_fd_prepare (ep.fd [0])
+          || s_fd_prepare (ep.fd [1]))
+        {
+           close (ep.fd [0]);
+           close (ep.fd [1]);
+           return -1;
+        }
+
+      ep.len = 1;
+    }
+
+  ep.sent = 0;
+  *epp = ep;
+  return 0;
+}
+
+static void
+s_epipe_destroy (s_epipe *epp)
+{
+  close (epp->fd [0]);
+
+  if (epp->fd [1] != epp->fd [0])
+    close (epp->fd [1]);
+
+  epp->len = 0;
+}
+
+static void
+s_epipe_signal (s_epipe *epp)
+{
+  if (epp->sent)
+    return;
+
+  epp->sent = 1;
+  {
+#ifdef _WIN32
+    /* perl overrides send with a function that crashes in other threads.
+     * unfortunately, it overrides it with an argument-less macro, so
+     * there is no way to force usage of the real send function.
+     * incompetent windows programmers - is this redundant?
+     */
+    DWORD dummy;
+    WriteFile (S_TO_HANDLE (epp->fd [1]), (LPCVOID)&dummy, 1, &dummy, 0);
+#else
+    static uint64_t counter = 1;
+    /* some modules accept fd's from outside, support eventfd here */
+    if (write (epp->fd [1], &counter, epp->len) < 0
+        && errno == EINVAL
+        && epp->len != 8)
+      write (epp->fd [1], &counter, (epp->len = 8));
+#endif
+  }
+}
+
+static void
+s_epipe_drain (s_epipe *epp)
+{
+  char buf [9];
+
+#ifdef _WIN32
+  recv (epp->fd [0], buf, sizeof (buf), 0);
+#else
+  read (epp->fd [0], buf, sizeof (buf));
+#endif
+
+  epp->sent = 0;
+}
+
+/* like new, but dups over old */
+static int
+s_epipe_renew (s_epipe *epp)
+{
+  s_epipe epn;
+
+  if (epp->fd [1] != epp->fd [0])
+    close (epp->fd [1]);
+
+  if (s_epipe_new (&epn))
+    return -1;
+
+  if (epp->len)
+    {
+      if (dup2 (epn.fd [0], epp->fd [0]) < 0)
+        croak ("unable to dup over old event pipe"); /* should not croak */
+
+      if (epp->fd [1] != epp->fd [0])
+        close (epn.fd [0]);
+
+      epn.fd [0] = epp->fd [0];
+    }
+
+  *epp = epn;
+
+  return 0;
+}
+
+#define s_epipe_fd(epp) ((epp)->fd [0])
+
+static int
+s_epipe_wait (s_epipe *epp)
+{
+#ifdef _WIN32
+  fd_set rfd;
+  int fd = s_epipe_fd (epp);
+
+  FD_ZERO (&rfd);
+  FD_SET (fd, &rfd);
+
+  return PerlSock_select (fd + 1, &rfd, 0, 0, 0);
+#else
+  /* poll is preferable on posix systems */
+  struct pollfd pfd;
+
+  pfd.fd = s_epipe_fd (epp);
+  pfd.events = POLLIN;
+
+  return poll (&pfd, 1, 0);
+#endif
+}
 
 #endif
 

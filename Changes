@@ -1,6 +1,10 @@
 Revision history for Perl extension Async::Interrupt.
 
-TODO: allow A::I to create the pipe, thereby allowing it to use eventfd.
+0.5   Fri Jul 17 03:53:21 CEST 2009
+	- INCOMPATIBLE CHANGE: signalling the value 0 is no longer allowed.
+	- added automatic pipe creation code, including post_fork method.
+        - added ->c_var method, and the ability to use a perl scalar as
+          signal checker.
 
 0.042 Tue Jul 14 21:51:04 CEST 2009
 	- enforce initialisation of perl's signal handling framework,

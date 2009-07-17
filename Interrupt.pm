@@ -103,7 +103,7 @@ BEGIN {
    # signal handling # variables
    $SIG{KILL} = sub { };
 
-   our $VERSION = '0.042';
+   our $VERSION = '0.5';
 
    require XSLoader;
    XSLoader::load ("Async::Interrupt", $VERSION);
@@ -159,6 +159,18 @@ Async::Interrupt). The callback itself runs as part of the perl context,
 so you can call any perl functions and modify any perl data structures (in
 which case the requirements set out for C<cb> apply as well).
 
+=item var => $scalar_ref
+
+When specified, then the given argument must be a reference to a
+scalar. The scalar will be set to C<0> intiially. Signalling the interrupt
+object will set it to the passed value, handling the interrupt will reset
+it to C<0> again.
+
+Note that the only thing you are legally allowed to do is to is to check
+the variable in a boolean or integer context (e.g. comparing it with a
+string, or printing it, will I<destroy> it and might cause your program to
+crash or worse).
+
 =item signal => $signame_or_value
 
 When this parameter is specified, then the Async::Interrupt will hook the
@@ -177,16 +189,14 @@ read again. Due to races, it is unlikely but possible that multiple octets
 are written. It is required that the file handles are both in nonblocking
 mode.
 
-You can get a portable pipe and set non-blocking mode portably by using
-e.g. L<AnyEvent::Util> from the L<AnyEvent> distribution.
-
-It is also possible to pass in a linux eventfd as both read and write
-handle (which is faster than a pipe).
-
 The object will keep a reference to the file handles.
 
 This can be used to ensure that async notifications will interrupt event
 frameworks as well.
+
+Note that C<Async::Interrupt> will create a suitable signal fd
+automatically when your program requests one, so you don't have to specify
+this agrument when all you want is an extra file descriptor to watch.
 
 =back
 
@@ -195,7 +205,7 @@ frameworks as well.
 sub new {
    my ($class, %arg) = @_;
 
-   bless \(_alloc $arg{cb}, @{$arg{c_cb}}[0,1], @{$arg{pipe}}[0,1], $arg{signal}), $class
+   bless \(_alloc $arg{cb}, @{$arg{c_cb}}[0,1], @{$arg{pipe}}[0,1], $arg{signal}, $arg{var}), $class
 }
 
 =item ($signal_func, $signal_arg) = $async->signal_func
@@ -213,8 +223,8 @@ An example call would look like:
 The function is safe to call from within signal and thread contexts, at
 any time. The specified C<value> is passed to both C and Perl callback.
 
-C<$value> must be in the valid range for a C<sig_atomic_t> (0..127 is
-portable).
+C<$value> must be in the valid range for a C<sig_atomic_t>, except C<0>
+(1..127 is portable).
 
 If the function is called while the Async::Interrupt object is already
 signaled but before the callbacks are being executed, then the stored
@@ -222,13 +232,38 @@ C<value> is either the old or the new one. Due to the asynchronous
 nature of the code, the C<value> can even be passed to two consecutive
 invocations of the callback.
 
-=item $async->signal ($value=0)
+=item $address = $async->c_var
+
+Returns the address (cast to IV) of an C<IV> variable. The variable is set
+to C<0> initially and gets set to the passed value whenever the object
+gets signalled, and reset to C<0> once the interrupt has been handled.
+
+Note that it is often beneficial to just call C<PERL_ASYNC_CHECK ()> to
+handle any interrupts.
+
+Example: call some XS function to store the address, then show C code
+waiting for it.
+
+   my_xs_func $async->c_var;
+
+   static IV *valuep;
+
+   void
+   my_xs_func (void *addr)
+           CODE:
+           valuep = (IV *)addr;
+
+   // code in a loop, waiting
+   while (!*valuep)
+     ; // do soemthing
+
+=item $async->signal ($value=1)
 
 This signals the given async object from Perl code. Semi-obviously, this
 will instantly trigger the callback invocation.
 
-C<$value> must be in the valid range for a C<sig_atomic_t> (0..127 is
-portable).
+C<$value> must be in the valid range for a C<sig_atomic_t>, except C<0>
+(1..127 is portable).
 
 =item $async->block
 
@@ -264,8 +299,31 @@ when you know you are not waiting for it (for example, with L<EV> you
 could disable the pipe in a check watcher, and enable it in a prepare
 watcher).
 
-Note that when C<fd_disable> is in effect, no attempt to read from the
-pipe will be done.
+Note that currently, while C<pipe_disable> is in effect, no attempt to
+read from the pipe will be done when handling events. This might change as
+soon as I realize why this is a mistake.
+
+=item $fileno = $async->pipe_fileno
+
+Returns the reading side of the signalling pipe. If no signalling pipe is
+currently attached to the object, it will dynamically create one.
+
+Note that the only valid oepration on this file descriptor is to wait
+until it is readable. The fd might belong currently to a pipe, a tcp
+socket, or an eventfd, depending on the platform, and is guaranteed to be
+C<select>able.
+
+=item $async->post_fork
+
+The object will not normally be usable after a fork (as the pipe fd is
+shared between processes). Calling this method after a fork in the child
+ensures that the object will work as expected again. It only needs to be
+called when the async object is used in the child.
+
+This only works when the pipe was created by Async::Interrupt.
+
+Async::Interrupt ensures that the reading file descriptor does not change
+it's value.
 
 =cut
 
@@ -289,9 +347,8 @@ handling slower (probably unmeasurably, though), but has the advantage
 of not requiring a special runops function, nor slowing down normal perl
 execution a bit.
 
-It assumes that C<sig_atomic_t> and C<int> are both async-safe to modify
-(C<sig_atomic_> is used by this module, and perl itself uses C<int>, so we
-can assume that this is quite portable, at least w.r.t. signals).
+It assumes that C<sig_atomic_t>, C<int> and C<IV> are all async-safe to
+modify.
 
 =head1 AUTHOR
 

@@ -31,15 +31,15 @@ typedef struct {
   void (*c_cb)(pTHX_ void *c_arg, int value);
   void *c_arg;
   SV *fh_r, *fh_w;
+  SV *value;
   int signum;
   volatile int blocked;
 
-  int fd_r;
-  volatile int fd_w;
+  s_epipe ep;
   int fd_wlen;
   atomic_t fd_enable;
-  atomic_t value;
   atomic_t pending;
+  volatile IV *valuep;
 } async_t;
 
 static AV *asyncs;
@@ -57,20 +57,17 @@ async_signal (void *signal_arg, int value)
   async_t *async = (async_t *)signal_arg;
   int pending = async->pending;
 
-  async->value   = value;
+  *async->valuep = value ? value : 1;
   async->pending = 1;
   async_pending  = 1;
   psig_pend [9]  = 1;
   *sig_pending   = 1;
 
   {
-    int fd_w      = async->fd_w;
     int fd_enable = async->fd_enable;
 
-    if (!pending && fd_w >= 0 && fd_enable)
-      if (write (fd_w, pipedata, async->fd_wlen) < 0 && errno == EINVAL)
-        /* on EINVAL we assume it's an eventfd */
-        write (fd_w, pipedata, (async->fd_wlen = 8));
+    if (!pending && fd_enable && async->ep.fd [1] >= 0)
+      s_epipe_signal (&async->ep);
   }
 }
 
@@ -78,18 +75,14 @@ static void
 handle_async (async_t *async)
 {
   int old_errno = errno;
-  int value = async->value;
+  int value = *async->valuep;
 
+  *async->valuep = 0;
   async->pending = 0;
 
   /* drain pipe */
-  if (async->fd_r >= 0 && async->fd_enable)
-    {
-      char dummy [9]; /* 9 is enough for eventfd and normal pipes */
-
-      while (read (async->fd_r, dummy, sizeof (dummy)) == sizeof (dummy))
-        ;
-    }
+  if (async->fd_enable && async->ep.fd [0] >= 0)
+    s_epipe_drain (&async->ep);
 
   if (async->c_cb)
     {
@@ -210,23 +203,42 @@ BOOT:
 PROTOTYPES: DISABLE
 
 void
-_alloc (SV *cb, void *c_cb, void *c_arg, SV *fh_r, SV *fh_w, SV *signl)
+_alloc (SV *cb, void *c_cb, void *c_arg, SV *fh_r, SV *fh_w, SV *signl, SV *pvalue)
 	PPCODE:
 {
         SV *cv   = SvOK (cb) ? SvREFCNT_inc (s_get_cv_croak (cb)) : 0;
-        int fd_r = SvOK (fh_r) ? s_fileno_croak (fh_r, 0) : -1;
-        int fd_w = SvOK (fh_w) ? s_fileno_croak (fh_w, 1) : -1;
   	async_t *async;
 
         Newz (0, async, 1, async_t);
 
         XPUSHs (sv_2mortal (newSViv (PTR2IV (async))));
+        /* TODO: need to bless right now to ensure deallocation */
         av_push (asyncs, TOPs);
 
-        async->fh_r      = fd_r >= 0 ? newSVsv (fh_r) : 0; async->fd_r = fd_r;
-        async->fh_w      = fd_w >= 0 ? newSVsv (fh_w) : 0; async->fd_w = fd_w;
-        async->fd_wlen   = 1;
-        async->fd_enable = 1;
+        SvGETMAGIC (fh_r); SvGETMAGIC (fh_w);
+        if (SvOK (fh_r) || SvOK (fh_w))
+          {
+            int fd_r = s_fileno_croak (fh_r, 0);
+            int fd_w = s_fileno_croak (fh_w, 1);
+
+            async->fh_r      = newSVsv (fh_r);
+            async->fh_w      = newSVsv (fh_w);
+            async->ep.fd [0] = fd_r;
+            async->ep.fd [1] = fd_w;
+            async->ep.len    = 1;
+            async->fd_enable = 1;
+          }
+
+        async->value     = SvROK (pvalue)
+                           ? SvREFCNT_inc_NN (SvRV (pvalue))
+                           : NEWSV (0, 0);
+
+        sv_setiv (async->value, 0);
+        SvIOK_only (async->value); /* just to be sure */
+        SvREADONLY_on (async->value);
+
+        async->valuep    = &(SvIVX (async->value));
+
         async->cb        = cv;
         async->c_cb      = c_cb;
         async->c_arg     = c_arg;
@@ -258,8 +270,15 @@ signal_func (async_t *async)
         PUSHs (sv_2mortal (newSViv (PTR2IV (async_signal))));
         PUSHs (sv_2mortal (newSViv (PTR2IV (async))));
 
+IV
+c_var (async_t *async)
+	CODE:
+        RETVAL = PTR2IV (async->valuep);
+	OUTPUT:
+        RETVAL
+
 void
-signal (async_t *async, int value = 0)
+signal (async_t *async, int value = 1)
 	CODE:
         async_signal (async, value);
 
@@ -293,6 +312,42 @@ pipe_enable (async_t *async)
         pipe_disable = 0
 	CODE:
         async->fd_enable = ix;
+
+int
+pipe_fileno (async_t *async)
+	CODE:
+        if (!async->ep.len)
+          {
+            int res;
+
+            /*block (async);*//*TODO*/
+            res = s_epipe_new (&async->ep);
+            async->fd_enable = 1;
+            /*unblock (async);*//*TODO*/
+
+            if (res < 0)
+              croak ("Async::Interrupt: unable to initialize event pipe");
+          }
+
+	RETVAL = async->ep.fd [0];
+	OUTPUT:
+        RETVAL
+
+
+void
+post_fork (async_t *async)
+	CODE:
+        if (async->ep.len)
+          {
+  	    int res;
+
+            /*block (async);*//*TODO*/
+            res = s_epipe_renew (&async->ep);
+            /*unblock (async);*//*TODO*/
+
+            if (res < 0)
+              croak ("Async::Interrupt: unable to initialize event pipe after fork");
+          }
 
 void
 DESTROY (SV *self)
@@ -330,9 +385,13 @@ DESTROY (SV *self)
 #endif
           }
 
+        if (!async->fh_r && async->ep.len)
+          s_epipe_destroy (&async->ep);
+
         SvREFCNT_dec (async->fh_r);
         SvREFCNT_dec (async->fh_w);
         SvREFCNT_dec (async->cb);
+        SvREFCNT_dec (async->value);
 
         Safefree (async);
 }
