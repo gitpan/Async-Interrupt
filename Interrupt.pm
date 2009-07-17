@@ -103,7 +103,7 @@ BEGIN {
    # signal handling # variables
    $SIG{KILL} = sub { };
 
-   our $VERSION = '0.5';
+   our $VERSION = '0.501';
 
    require XSLoader;
    XSLoader::load ("Async::Interrupt", $VERSION);

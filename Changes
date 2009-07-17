@@ -1,5 +1,9 @@
 Revision history for Perl extension Async::Interrupt.
 
+0.501 Fri Jul 17 16:58:51 CEST 2009
+	- do no longer errornously do operations on fd 0 if no pipe
+          is associated with the interrupt object.
+
 0.5   Fri Jul 17 03:53:21 CEST 2009
 	- INCOMPATIBLE CHANGE: signalling the value 0 is no longer allowed.
 	- added automatic pipe creation code, including post_fork method.

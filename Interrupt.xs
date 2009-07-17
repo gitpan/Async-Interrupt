@@ -63,12 +63,8 @@ async_signal (void *signal_arg, int value)
   psig_pend [9]  = 1;
   *sig_pending   = 1;
 
-  {
-    int fd_enable = async->fd_enable;
-
-    if (!pending && fd_enable && async->ep.fd [1] >= 0)
-      s_epipe_signal (&async->ep);
-  }
+  if (!pending && async->fd_enable && async->ep.len)
+    s_epipe_signal (&async->ep);
 }
 
 static void
@@ -81,7 +77,7 @@ handle_async (async_t *async)
   async->pending = 0;
 
   /* drain pipe */
-  if (async->fd_enable && async->ep.fd [0] >= 0)
+  if (async->fd_enable && async->ep.len)
     s_epipe_drain (&async->ep);
 
   if (async->c_cb)
