@@ -13,4 +13,5 @@ t/02_pipe.t
 t/03_signal.t
 t/04_apipe.t
 t/05_var.t
+t/06_epipe.t
 META.yml                                 Module meta-data (added by MakeMaker)

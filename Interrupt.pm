@@ -90,6 +90,8 @@ I<running> interpreter, there is optional support for signalling a pipe
 L<EV> or L<AnyEvent>). This, of course, incurs the overhead of a C<read>
 and C<write> syscall.
 
+=head1 THE Async::Interrupt CLASS
+
 =over 4
 
 =cut
@@ -103,7 +105,7 @@ BEGIN {
    # signal handling # variables
    $SIG{KILL} = sub { };
 
-   our $VERSION = '0.501';
+   our $VERSION = '0.6';
 
    require XSLoader;
    XSLoader::load ("Async::Interrupt", $VERSION);
@@ -196,7 +198,11 @@ frameworks as well.
 
 Note that C<Async::Interrupt> will create a suitable signal fd
 automatically when your program requests one, so you don't have to specify
-this agrument when all you want is an extra file descriptor to watch.
+this argument when all you want is an extra file descriptor to watch.
+
+If you want to share a single event pipe between multiple Async::Interrupt
+objects, you can use the C<Async::Interrupt::EventPipe> class to manage
+those.
 
 =back
 
@@ -255,7 +261,7 @@ waiting for it.
 
    // code in a loop, waiting
    while (!*valuep)
-     ; // do soemthing
+     ; // do something
 
 =item $async->signal ($value=1)
 
@@ -313,6 +319,16 @@ until it is readable. The fd might belong currently to a pipe, a tcp
 socket, or an eventfd, depending on the platform, and is guaranteed to be
 C<select>able.
 
+=item $async->pipe_autodrain ($enable)
+
+Enables (C<1>) or disables (C<0>) automatic draining of the pipe (default:
+enabled). When automatic draining is enabled, then Async::Interrupt will
+automatically clear the pipe. Otherwise the user is responsible for this
+draining.
+
+This is useful when you want to share one pipe among many Async::Interrupt
+objects.
+
 =item $async->post_fork
 
 The object will not normally be usable after a fork (as the pipe fd is
@@ -325,11 +341,60 @@ This only works when the pipe was created by Async::Interrupt.
 Async::Interrupt ensures that the reading file descriptor does not change
 it's value.
 
+=back
+
+=head1 THE Async::Interrupt::EventPipe CLASS
+
+Pipes are the predominent utility to make asynchronous signals
+synchronous. However, pipes are hard to come by: they don't exist on the
+broken windows platform, and on GNU/Linux systems, you might want to use
+an C<eventfd> instead.
+
+This class creates selectable event pipes in a portable fashion: on
+windows, it will try to create a tcp socket pair, on GNU/Linux, it will
+try to create an eventfd and everywhere else it will try to use a normal
+pipe.
+
+=over 4
+
+=item $epipe = new Async::Interrupt::EventPipe
+
+This creates and returns an eventpipe object. This object is simply a
+blessed array reference:
+
+=item ($r_fd, $w_fd) = $epipe->filenos
+
+Returns the read-side file descriptor and the write-side file descriptor.
+
+Example: pass an eventpipe object as pipe to the Async::Interrupt
+constructor, and create an AnyEvent watcher for the read side.
+
+   my $epipe = new Async::Interrupt::EventPipe;
+   my $asy = new Async::Interrupt pipe => [$epipe->filenos];
+   my $iow = AnyEvent->io (fh => $epipe->fileno, poll => 'r', cb => sub { });
+
+=item $r_fd = $epipe->fileno
+
+Return only the reading/listening side.
+
+=item $epipe->signal
+
+Write something to the pipe, in a portable fashion.
+
+=item $epipe->drain
+
+Drain (empty) the pipe.
+
+=item $epipe->renew
+
+Recreates the pipe (useful after a fork). The reading side will not change
+it's file descriptor number, but the writing side might.
+
+=back
+
 =cut
 
 1;
-
-=back
 
 =head1 EXAMPLE
 

@@ -33,6 +33,7 @@ typedef struct {
   SV *fh_r, *fh_w;
   SV *value;
   int signum;
+  int autodrain;
   volatile int blocked;
 
   s_epipe ep;
@@ -77,7 +78,7 @@ handle_async (async_t *async)
   async->pending = 0;
 
   /* drain pipe */
-  if (async->fd_enable && async->ep.len)
+  if (async->fd_enable && async->ep.len && async->autodrain)
     s_epipe_drain (&async->ep);
 
   if (async->c_cb)
@@ -137,10 +138,20 @@ handle_asyncs (void)
 
   for (i = AvFILLp (asyncs); i >= 0; --i)
     {
-      async_t *async = SvASYNC_nrv (AvARRAY (asyncs)[i]);
+      SV *async_sv = AvARRAY (asyncs)[i];
+      async_t *async = SvASYNC_nrv (async_sv);
 
       if (async->pending && !async->blocked)
-        handle_async (async);
+        {
+          /* temporarily keep a refcount */
+          SvREFCNT_inc (async_sv);
+          handle_async (async);
+          SvREFCNT_dec (async_sv);
+
+          /* the handler could have deleted any number of asyncs */
+          if (i > AvFILLp (asyncs))
+            i = AvFILLp (asyncs);
+        }
     }
 }
 
@@ -235,6 +246,7 @@ _alloc (SV *cb, void *c_cb, void *c_arg, SV *fh_r, SV *fh_w, SV *signl, SV *pval
 
         async->valuep    = &(SvIVX (async->value));
 
+        async->autodrain = 1;
         async->cb        = cv;
         async->c_cb      = c_cb;
         async->c_arg     = c_arg;
@@ -250,9 +262,10 @@ _alloc (SV *cb, void *c_cb, void *c_arg, SV *fh_r, SV *fh_w, SV *signl, SV *pval
             signal (async->signum, async_sigsend);
 #else
             {
-              struct sigaction sa = { };
+              struct sigaction sa;
               sa.sa_handler = async_sigsend;
               sigfillset (&sa.sa_mask);
+              sa.sa_flags = 0; /* if we interrupt a syscall, we might drain the pipe before it became ready */
               sigaction (async->signum, &sa, 0);
             }
 #endif
@@ -329,6 +342,14 @@ pipe_fileno (async_t *async)
 	OUTPUT:
         RETVAL
 
+int
+pipe_autodrain (async_t *async, int enable = -1)
+	CODE:
+	RETVAL = async->autodrain;
+        if (enable >= 0)
+          async->autodrain = enable;
+	OUTPUT:
+        RETVAL
 
 void
 post_fork (async_t *async)
@@ -356,10 +377,8 @@ DESTROY (SV *self)
         for (i = AvFILLp (asyncs); i >= 0; --i)
           if (AvARRAY (asyncs)[i] == async_sv)
             {
-              if (i < AvFILLp (asyncs))
-                AvARRAY (asyncs)[i] = AvARRAY (asyncs)[AvFILLp (asyncs)];
-
-              assert (av_pop (asyncs) == async_sv);
+              AvARRAY (asyncs)[i] = AvARRAY (asyncs)[AvFILLp (asyncs)];
+              av_pop (asyncs);
               goto found;
             }
 
@@ -374,8 +393,10 @@ DESTROY (SV *self)
             signal (async->signum, SIG_DFL);
 #else
             {
-              struct sigaction sa = { };
+              struct sigaction sa;
               sa.sa_handler = SIG_DFL;
+              sigemptyset (&sa.sa_mask);
+              sa.sa_flags = 0;
               sigaction (async->signum, &sa, 0);
             }
 #endif
@@ -391,4 +412,56 @@ DESTROY (SV *self)
 
         Safefree (async);
 }
+
+MODULE = Async::Interrupt		PACKAGE = Async::Interrupt::EventPipe		PREFIX = s_epipe_
+
+void
+new (const char *klass)
+	PPCODE:
+{
+  	s_epipe *epp;
+        SV *self;
+
+        Newz (0, epp, 1, s_epipe);
+        XPUSHs (sv_setref_iv (sv_newmortal (), klass, PTR2IV (epp)));
+
+        if (s_epipe_new (epp) < 0)
+          croak ("Async::Interrupt::EventPipe: unable to create new event pipe");
+}
+
+void
+filenos (s_epipe *epp)
+	PPCODE:
+        EXTEND (SP, 2);
+        PUSHs (sv_2mortal (newSViv (epp->fd [0])));
+        PUSHs (sv_2mortal (newSViv (epp->fd [1])));
+
+int
+fileno (s_epipe *epp)
+	ALIAS:
+        fileno   = 0
+        fileno_r = 0
+        fileno_w = 1
+	CODE:
+        RETVAL = epp->fd [ix];
+	OUTPUT:
+        RETVAL
+
+int
+type (s_epipe *epp)
+	CODE:
+        RETVAL = epp->len;
+	OUTPUT:
+        RETVAL
+
+void
+s_epipe_signal (s_epipe *epp)
+
+void
+s_epipe_drain (s_epipe *epp)
+
+void
+DESTROY (s_epipe *epp)
+	CODE:
+        s_epipe_destroy (epp);
 

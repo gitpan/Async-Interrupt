@@ -80,6 +80,7 @@ DESCRIPTION
     EV or AnyEvent). This, of course, incurs the overhead of a "read" and
     "write" syscall.
 
+THE Async::Interrupt CLASS
     $async = new Async::Interrupt key => value...
         Creates a new Async::Interrupt object. You may only use async
         notifications on this object while it exists, so you need to keep a
@@ -160,8 +161,12 @@ DESCRIPTION
 
             Note that "Async::Interrupt" will create a suitable signal fd
             automatically when your program requests one, so you don't have
-            to specify this agrument when all you want is an extra file
+            to specify this argument when all you want is an extra file
             descriptor to watch.
+
+            If you want to share a single event pipe between multiple
+            Async::Interrupt objects, you can use the
+            "Async::Interrupt::EventPipe" class to manage those.
 
     ($signal_func, $signal_arg) = $async->signal_func
         Returns the address of a function to call asynchronously. The
@@ -210,7 +215,7 @@ DESCRIPTION
 
            // code in a loop, waiting
            while (!*valuep)
-             ; // do soemthing
+             ; // do something
 
     $async->signal ($value=1)
         This signals the given async object from Perl code. Semi-obviously,
@@ -263,6 +268,15 @@ DESCRIPTION
         a tcp socket, or an eventfd, depending on the platform, and is
         guaranteed to be "select"able.
 
+    $async->pipe_autodrain ($enable)
+        Enables (1) or disables (0) automatic draining of the pipe (default:
+        enabled). When automatic draining is enabled, then Async::Interrupt
+        will automatically clear the pipe. Otherwise the user is responsible
+        for this draining.
+
+        This is useful when you want to share one pipe among many
+        Async::Interrupt objects.
+
     $async->post_fork
         The object will not normally be usable after a fork (as the pipe fd
         is shared between processes). Calling this method after a fork in
@@ -273,6 +287,45 @@ DESCRIPTION
 
         Async::Interrupt ensures that the reading file descriptor does not
         change it's value.
+
+THE Async::Interrupt::EventPipe CLASS
+    Pipes are the predominent utility to make asynchronous signals
+    synchronous. However, pipes are hard to come by: they don't exist on the
+    broken windows platform, and on GNU/Linux systems, you might want to use
+    an "eventfd" instead.
+
+    This class creates selectable event pipes in a portable fashion: on
+    windows, it will try to create a tcp socket pair, on GNU/Linux, it will
+    try to create an eventfd and everywhere else it will try to use a normal
+    pipe.
+
+    $epipe = new Async::Interrupt::EventPipe
+        This creates and returns an eventpipe object. This object is simply
+        a blessed array reference:
+
+    ($r_fd, $w_fd) = $epipe->filenos
+        Returns the read-side file descriptor and the write-side file
+        descriptor.
+
+        Example: pass an eventpipe object as pipe to the Async::Interrupt
+        constructor, and create an AnyEvent watcher for the read side.
+
+           my $epipe = new Async::Interrupt::EventPipe;
+           my $asy = new Async::Interrupt pipe => [$epipe->filenos];
+           my $iow = AnyEvent->io (fh => $epipe->fileno, poll => 'r', cb => sub { });
+
+    $r_fd = $epipe->fileno
+        Return only the reading/listening side.
+
+    $epipe->signal
+        Write something to the pipe, in a portable fashion.
+
+    $epipe->drain
+        Drain (empty) the pipe.
+
+    $epipe->renew
+        Recreates the pipe (useful after a fork). The reading side will not
+        change it's file descriptor number, but the writing side might.
 
 EXAMPLE
     There really should be a complete C/XS example. Bug me about it. Better

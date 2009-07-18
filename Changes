@@ -1,5 +1,15 @@
 Revision history for Perl extension Async::Interrupt.
 
+0.6   Sat Jul 18 07:09:33 CEST 2009
+	- add autodrain setting.
+        - added Async::Interrupt::EventPipe class.
+        - fixed a potential race issue by removing the internal
+          epipe state.
+        - destroying asyncs inside their handler callback could lead
+          to segfaults.
+        - destoying an interrupt object did not properly remove it
+          from the asyncs list (classical case of side-effect-inside-assert).
+
 0.501 Fri Jul 17 16:58:51 CEST 2009
 	- do no longer errornously do operations on fd 0 if no pipe
           is associated with the interrupt object.
