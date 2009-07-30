@@ -47,6 +47,9 @@ DESCRIPTION
         technique to interrupt background processes regularly to send map
         updates to game clients.
 
+        Or EV::Loop::Async uses an interrupt object to wake up perl when new
+        events have arrived.
+
         IO::AIO and BDB could also use this to speed up result reporting.
 
     Speedy event loop invocation
@@ -79,6 +82,132 @@ DESCRIPTION
     that means you can also wait for the pipe to become readable (e.g. via
     EV or AnyEvent). This, of course, incurs the overhead of a "read" and
     "write" syscall.
+
+USAGE EXAMPLES
+  Implementing race-free signal handling
+    This example uses a single event pipe for all signals, and one
+    Async::Interrupt per signal. This code is actually what the AnyEvent
+    module uses itself when Async::Interrupt is available.
+
+    First, create the event pipe and hook it into the event loop
+
+       $SIGPIPE = new Async::Interrupt::EventPipe;
+       $SIGPIPE_W = AnyEvent->io (
+          fh   => $SIGPIPE->fileno,
+          poll => "r",
+          cb   => \&_signal_check, # defined later
+       );
+
+    Then, for each signal to hook, create an Async::Interrupt object. The
+    callback just sets a global variable, as we are only interested in
+    synchronous signals (i.e. when the event loop polls), which is why the
+    pipe draining is not done automatically.
+
+       my $interrupt = new Async::Interrupt
+          cb             => sub { undef $SIGNAL_RECEIVED{$signum} }
+          signal         => $signum,
+          pipe           => [$SIGPIPE->filenos],
+          pipe_autodrain => 0,
+       ;
+
+    Finally, the I/O callback for the event pipe handles the signals:
+
+       sub _signal_check {
+          # drain the pipe first
+          $SIGPIPE->drain;
+
+          # two loops, just to be sure
+          while (%SIGNAL_RECEIVED) {
+             for (keys %SIGNAL_RECEIVED) {
+                delete $SIGNAL_RECEIVED{$_};
+                warn "signal $_ received\n";
+             }
+          }
+       }
+
+  Interrupt perl from another thread
+    This example interrupts the Perl interpreter from another thread, via
+    the XS API. This is used by e.g. the EV::Loop::Async module.
+
+    On the Perl level, a new loop object (which contains the thread) is
+    created, by first calling some XS constructor, querying the C-level
+    callback function and feeding that as the "c_cb" into the
+    Async::Interrupt constructor:
+
+       my $self = XS_thread_constructor;
+       my ($c_func, $c_arg) = _c_func $self; # return the c callback
+       my $asy = new Async::Interrupt c_cb => [$c_func, $c_arg];
+
+    Then the newly created Interrupt object is queried for the signaling
+    function that the newly created thread should call, and this is in turn
+    told to the thread object:
+
+       _attach $self, $asy->signal_func;
+
+    So to repeat: first the XS object is created, then it is queried for the
+    callback that should be called when the Interrupt object gets signalled.
+
+    Then the interrupt object is queried for the callback fucntion that the
+    thread should call to signal the Interrupt object, and this callback is
+    then attached to the thread.
+
+    You have to be careful that your new thread is not signalling before the
+    signal function was configured, for example by starting the background
+    thread only within "_attach".
+
+    That concludes the Perl part.
+
+    The XS part consists of the actual constructor which creates a thread,
+    which is not relevant for this example, and two functions, "_c_func",
+    which returns the Perl-side callback, and "_attach", which configures
+    the signalling functioon that is safe toc all from another thread. For
+    simplicity, we will use global variables to store the functions,
+    normally you would somehow attach them to $self.
+
+    The "c_func" simply returns the address of a static function and
+    arranges for the object pointed to by $self to be passed to it, as an
+    integer:
+
+       void
+       _c_func (SV *loop)
+               PPCODE:
+               EXTEND (SP, 2);
+               PUSHs (sv_2mortal (newSViv (PTR2IV (c_func))));
+               PUSHs (sv_2mortal (newSViv (SvRV (loop))));
+
+    This would be the callback (since it runs in a normal Perl context, it
+    is permissible to manipulate Perl values):
+
+       static void
+       c_func (pTHX_ void *loop_, int value)
+       {
+         SV *loop_object = (SV *)loop_;
+         ...
+       }
+
+    And this attaches the signalling callback:
+
+       static void (*my_sig_func) (void *signal_arg, int value);
+       static void *my_sig_arg;
+
+       void
+       _attach (SV *loop_, IV sig_func, void *sig_arg)
+               CODE:
+       {
+               my_sig_func = sig_func;
+               my_sig_arg  = sig_arg;
+
+               /* now run the thread */
+               thread_create (&u->tid, l_run, 0);
+       }
+
+    And "l_run" (the background thread) would eventually call the signaling
+    function:
+
+       my_sig_func (my_sig_arg, 0);
+
+    You can have a look at EV::Loop::Async for an actual example using
+    intra-thread communication, locking and so on.
 
 THE Async::Interrupt CLASS
     $async = new Async::Interrupt key => value...
@@ -127,7 +256,7 @@ THE Async::Interrupt CLASS
 
         var => $scalar_ref
             When specified, then the given argument must be a reference to a
-            scalar. The scalar will be set to 0 intiially. Signalling the
+            scalar. The scalar will be set to 0 initially. Signalling the
             interrupt object will set it to the passed value, handling the
             interrupt will reset it to 0 again.
 
@@ -145,6 +274,10 @@ THE Async::Interrupt CLASS
             Only one async can hook a given signal, and the signal will be
             restored to defaults when the Async::Interrupt object gets
             destroyed.
+
+        signal_hysteresis => $boolean
+            Sets the initial signal hysteresis state, see the
+            "signal_hysteresis" method, below.
 
         pipe => [$fileno_or_fh_for_reading, $fileno_or_fh_for_writing]
             Specifies two file descriptors (or file handles) that should be
@@ -168,10 +301,14 @@ THE Async::Interrupt CLASS
             Async::Interrupt objects, you can use the
             "Async::Interrupt::EventPipe" class to manage those.
 
+        pipe_autodrain => $boolean
+            Sets the initial autodrain state, see the "pipe_autodrain"
+            method, below.
+
     ($signal_func, $signal_arg) = $async->signal_func
         Returns the address of a function to call asynchronously. The
         function has the following prototype and needs to be passed the
-        specified $c_arg, which is a "void *" cast to "IV":
+        specified $signal_arg, which is a "void *" cast to "IV":
 
            void (*signal_func) (void *signal_arg, int value)
 
@@ -219,10 +356,26 @@ THE Async::Interrupt CLASS
 
     $async->signal ($value=1)
         This signals the given async object from Perl code. Semi-obviously,
-        this will instantly trigger the callback invocation.
+        this will instantly trigger the callback invocation (it does not, as
+        the name might imply, do anything with POSIX signals).
 
         $value must be in the valid range for a "sig_atomic_t", except 0
         (1..127 is portable).
+
+    $async->signal_hysteresis ($enable)
+        Enables or disables signal hysteresis (default: disabled). If a
+        POSIX signal is used as a signal source for the interrupt object,
+        then enabling signal hysteresis causes Async::Interrupt to reset the
+        signal action to "SIG_IGN" in the signal handler and restore it just
+        before handling the interruption.
+
+        When you expect a lot of signals (e.g. when using SIGIO), then
+        enabling signal hysteresis can reduce the number of handler
+        invocations considerably, at the cost of two extra syscalls.
+
+        Note that setting the signal to "SIG_IGN" can have unintended side
+        effects when you fork and exec other programs, as often they do nto
+        expect signals to be ignored by default.
 
     $async->block
     $async->unblock
@@ -245,6 +398,22 @@ THE Async::Interrupt CLASS
 
         This is the recommended (and fastest) way to implement critical
         sections.
+
+    ($block_func, $block_arg) = $async->scope_block_func
+        Returns the address of a function that implements the "scope_block"
+        functionality.
+
+        It has the following prototype and needs to be passed the specified
+        $block_arg, which is a "void *" cast to "IV":
+
+           void (*block_func) (void *block_arg)
+
+        An example call would look like:
+
+           block_func (block_arg);
+
+        The function is safe to call only from within the toplevel of a perl
+        XS function and will call "LEAVE" and "ENTER" (in this order!).
 
     $async->pipe_enable
     $async->pipe_disable
@@ -288,6 +457,15 @@ THE Async::Interrupt CLASS
         Async::Interrupt ensures that the reading file descriptor does not
         change it's value.
 
+    $signum = Async::Interrupt::sig2num $signame_or_number
+    $signame = Async::Interrupt::sig2name $signame_or_number
+        These two convenience functions simply convert a signal name or
+        number to the corresponding name or number. They are not used by
+        this module and exist just because perl doesn't have a nice way to
+        do this on its own.
+
+        They will return "undef" on illegal names or numbers.
+
 THE Async::Interrupt::EventPipe CLASS
     Pipes are the predominent utility to make asynchronous signals
     synchronous. However, pipes are hard to come by: they don't exist on the
@@ -323,13 +501,27 @@ THE Async::Interrupt::EventPipe CLASS
     $epipe->drain
         Drain (empty) the pipe.
 
+    ($c_func, $c_arg) = $epipe->drain_func
+        Returns a function pointer and "void *" argument that can be called
+        to have the effect of "$epipe->drain" on the XS level.
+
+        It has the following prototype and needs to be passed the specified
+        $c_arg, which is a "void *" cast to "IV":
+
+           void (*c_func) (void *c_arg)
+
+        An example call would look like:
+
+           c_func (c_arg);
+
     $epipe->renew
         Recreates the pipe (useful after a fork). The reading side will not
         change it's file descriptor number, but the writing side might.
 
-EXAMPLE
-    There really should be a complete C/XS example. Bug me about it. Better
-    yet, create one.
+    $epipe->wait
+        This method blocks the process until there are events on the pipe.
+        This is not a very event-based or ncie way of usign an event pipe,
+        but it can be occasionally useful.
 
 IMPLEMENTATION DETAILS AND LIMITATIONS
     This module works by "hijacking" SIGKILL, which is guaranteed to always

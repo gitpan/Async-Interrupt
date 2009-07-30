@@ -55,6 +55,9 @@ For example the deliantra game server uses a variant of this technique
 to interrupt background processes regularly to send map updates to game
 clients.
 
+Or L<EV::Loop::Async> uses an interrupt object to wake up perl when new
+events have arrived.
+
 L<IO::AIO> and L<BDB> could also use this to speed up result reporting.
 
 =item Speedy event loop invocation
@@ -90,6 +93,135 @@ I<running> interpreter, there is optional support for signalling a pipe
 L<EV> or L<AnyEvent>). This, of course, incurs the overhead of a C<read>
 and C<write> syscall.
 
+=head1 USAGE EXAMPLES
+
+=head2 Implementing race-free signal handling
+
+This example uses a single event pipe for all signals, and one
+Async::Interrupt per signal. This code is actually what the L<AnyEvent>
+module uses itself when Async::Interrupt is available.
+
+First, create the event pipe and hook it into the event loop
+
+   $SIGPIPE = new Async::Interrupt::EventPipe;
+   $SIGPIPE_W = AnyEvent->io (
+      fh   => $SIGPIPE->fileno,
+      poll => "r",
+      cb   => \&_signal_check, # defined later
+   );
+
+Then, for each signal to hook, create an Async::Interrupt object. The
+callback just sets a global variable, as we are only interested in
+synchronous signals (i.e. when the event loop polls), which is why the
+pipe draining is not done automatically.
+
+   my $interrupt = new Async::Interrupt
+      cb             => sub { undef $SIGNAL_RECEIVED{$signum} }
+      signal         => $signum,
+      pipe           => [$SIGPIPE->filenos],
+      pipe_autodrain => 0,
+   ;
+
+Finally, the I/O callback for the event pipe handles the signals:
+
+   sub _signal_check {
+      # drain the pipe first
+      $SIGPIPE->drain;
+
+      # two loops, just to be sure
+      while (%SIGNAL_RECEIVED) {
+         for (keys %SIGNAL_RECEIVED) {
+            delete $SIGNAL_RECEIVED{$_};
+            warn "signal $_ received\n";
+         }
+      }
+   }
+
+=head2 Interrupt perl from another thread
+
+This example interrupts the Perl interpreter from another thread, via the
+XS API. This is used by e.g. the L<EV::Loop::Async> module.
+
+On the Perl level, a new loop object (which contains the thread)
+is created, by first calling some XS constructor, querying the
+C-level callback function and feeding that as the C<c_cb> into the
+Async::Interrupt constructor:
+
+   my $self = XS_thread_constructor;
+   my ($c_func, $c_arg) = _c_func $self; # return the c callback
+   my $asy = new Async::Interrupt c_cb => [$c_func, $c_arg];
+
+Then the newly created Interrupt object is queried for the signaling
+function that the newly created thread should call, and this is in turn
+told to the thread object:
+
+   _attach $self, $asy->signal_func;
+
+So to repeat: first the XS object is created, then it is queried for the
+callback that should be called when the Interrupt object gets signalled.
+
+Then the interrupt object is queried for the callback fucntion that the
+thread should call to signal the Interrupt object, and this callback is
+then attached to the thread.
+
+You have to be careful that your new thread is not signalling before the
+signal function was configured, for example by starting the background
+thread only within C<_attach>.
+
+That concludes the Perl part.
+
+The XS part consists of the actual constructor which creates a thread,
+which is not relevant for this example, and two functions, C<_c_func>,
+which returns the Perl-side callback, and C<_attach>, which configures
+the signalling functioon that is safe toc all from another thread. For
+simplicity, we will use global variables to store the functions, normally
+you would somehow attach them to C<$self>.
+
+The C<c_func> simply returns the address of a static function and arranges
+for the object pointed to by C<$self> to be passed to it, as an integer:
+
+   void
+   _c_func (SV *loop)
+           PPCODE:
+           EXTEND (SP, 2);
+           PUSHs (sv_2mortal (newSViv (PTR2IV (c_func))));
+           PUSHs (sv_2mortal (newSViv (SvRV (loop))));
+
+This would be the callback (since it runs in a normal Perl context, it is
+permissible to manipulate Perl values):
+
+   static void
+   c_func (pTHX_ void *loop_, int value)
+   {
+     SV *loop_object = (SV *)loop_;
+     ...
+   }
+
+And this attaches the signalling callback:
+
+   static void (*my_sig_func) (void *signal_arg, int value);
+   static void *my_sig_arg;
+
+   void
+   _attach (SV *loop_, IV sig_func, void *sig_arg)
+           CODE:
+   {
+           my_sig_func = sig_func;
+           my_sig_arg  = sig_arg;
+
+           /* now run the thread */
+           thread_create (&u->tid, l_run, 0);
+   }
+
+And C<l_run> (the background thread) would eventually call the signaling
+function:
+
+   my_sig_func (my_sig_arg, 0);
+
+You can have a look at L<EV::Loop::Async> for an actual example using
+intra-thread communication, locking and so on.
+
+
 =head1 THE Async::Interrupt CLASS
 
 =over 4
@@ -102,10 +234,11 @@ use common::sense;
 
 BEGIN {
    # the next line forces initialisation of internal
-   # signal handling # variables
+   # signal handling variables, otherwise, PL_sig_pending
+   # etc. will be null pointers.
    $SIG{KILL} = sub { };
 
-   our $VERSION = '0.6';
+   our $VERSION = '1.0';
 
    require XSLoader;
    XSLoader::load ("Async::Interrupt", $VERSION);
@@ -138,7 +271,7 @@ Async::Interrupt.
 
 If the callback should throw an exception, then it will be caught,
 and C<$Async::Interrupt::DIED> will be called with C<$@> containing
-the exception.  The default will simply C<warn> about the message and
+the exception. The default will simply C<warn> about the message and
 continue.
 
 =item c_cb => [$c_func, $c_arg]
@@ -164,7 +297,7 @@ which case the requirements set out for C<cb> apply as well).
 =item var => $scalar_ref
 
 When specified, then the given argument must be a reference to a
-scalar. The scalar will be set to C<0> intiially. Signalling the interrupt
+scalar. The scalar will be set to C<0> initially. Signalling the interrupt
 object will set it to the passed value, handling the interrupt will reset
 it to C<0> again.
 
@@ -181,6 +314,11 @@ the given signal is caught by the process.
 
 Only one async can hook a given signal, and the signal will be restored to
 defaults when the Async::Interrupt object gets destroyed.
+
+=item signal_hysteresis => $boolean
+
+Sets the initial signal hysteresis state, see the C<signal_hysteresis>
+method, below.
 
 =item pipe => [$fileno_or_fh_for_reading, $fileno_or_fh_for_writing]
 
@@ -204,6 +342,10 @@ If you want to share a single event pipe between multiple Async::Interrupt
 objects, you can use the C<Async::Interrupt::EventPipe> class to manage
 those.
 
+=item pipe_autodrain => $boolean
+
+Sets the initial autodrain state, see the C<pipe_autodrain> method, below.
+
 =back
 
 =cut
@@ -211,14 +353,21 @@ those.
 sub new {
    my ($class, %arg) = @_;
 
-   bless \(_alloc $arg{cb}, @{$arg{c_cb}}[0,1], @{$arg{pipe}}[0,1], $arg{signal}, $arg{var}), $class
+   my $self = bless \(_alloc $arg{cb}, @{$arg{c_cb}}[0,1], @{$arg{pipe}}[0,1], $arg{signal}, $arg{var}), $class;
+
+   # urgs, reminds me of Event
+   for my $attr (qw(pipe_autodrain signal_hysteresis)) {
+      $self->$attr ($arg{$attr}) if exists $arg{$attr};
+   }
+
+   $self
 }
 
 =item ($signal_func, $signal_arg) = $async->signal_func
 
-Returns the address of a function to call asynchronously. The function has
-the following prototype and needs to be passed the specified C<$c_arg>,
-which is a C<void *> cast to C<IV>:
+Returns the address of a function to call asynchronously. The function
+has the following prototype and needs to be passed the specified
+C<$signal_arg>, which is a C<void *> cast to C<IV>:
 
    void (*signal_func) (void *signal_arg, int value)
 
@@ -266,10 +415,27 @@ waiting for it.
 =item $async->signal ($value=1)
 
 This signals the given async object from Perl code. Semi-obviously, this
-will instantly trigger the callback invocation.
+will instantly trigger the callback invocation (it does not, as the name
+might imply, do anything with POSIX signals).
 
 C<$value> must be in the valid range for a C<sig_atomic_t>, except C<0>
 (1..127 is portable).
+
+=item $async->signal_hysteresis ($enable)
+
+Enables or disables signal hysteresis (default: disabled). If a POSIX
+signal is used as a signal source for the interrupt object, then enabling
+signal hysteresis causes Async::Interrupt to reset the signal action to
+C<SIG_IGN> in the signal handler and restore it just before handling the
+interruption.
+
+When you expect a lot of signals (e.g. when using SIGIO), then enabling
+signal hysteresis can reduce the number of handler invocations
+considerably, at the cost of two extra syscalls.
+
+Note that setting the signal to C<SIG_IGN> can have unintended side
+effects when you fork and exec other programs, as often they do nto expect
+signals to be ignored by default.
 
 =item $async->block
 
@@ -294,6 +460,23 @@ the current scope is exited (via an exception, by canceling the Coro
 thread, by calling last/goto etc.).
 
 This is the recommended (and fastest) way to implement critical sections.
+
+=item ($block_func, $block_arg) = $async->scope_block_func
+
+Returns the address of a function that implements the C<scope_block>
+functionality.
+
+It has the following prototype and needs to be passed the specified
+C<$block_arg>, which is a C<void *> cast to C<IV>:
+
+   void (*block_func) (void *block_arg)
+
+An example call would look like:
+
+   block_func (block_arg);
+
+The function is safe to call only from within the toplevel of a perl XS
+function and will call C<LEAVE> and C<ENTER> (in this order!).
 
 =item $async->pipe_enable
 
@@ -341,6 +524,16 @@ This only works when the pipe was created by Async::Interrupt.
 Async::Interrupt ensures that the reading file descriptor does not change
 it's value.
 
+=item $signum = Async::Interrupt::sig2num $signame_or_number
+
+=item $signame = Async::Interrupt::sig2name $signame_or_number
+
+These two convenience functions simply convert a signal name or number to
+the corresponding name or number. They are not used by this module and
+exist just because perl doesn't have a nice way to do this on its own.
+
+They will return C<undef> on illegal names or numbers.
+
 =back
 
 =head1 THE Async::Interrupt::EventPipe CLASS
@@ -385,21 +578,36 @@ Write something to the pipe, in a portable fashion.
 
 Drain (empty) the pipe.
 
+=item ($c_func, $c_arg) = $epipe->drain_func
+
+Returns a function pointer and C<void *> argument that can be called to
+have the effect of C<< $epipe->drain >> on the XS level.
+
+It has the following prototype and needs to be passed the specified
+C<$c_arg>, which is a C<void *> cast to C<IV>:
+
+   void (*c_func) (void *c_arg)
+
+An example call would look like:
+
+   c_func (c_arg);
+
 =item $epipe->renew
 
 Recreates the pipe (useful after a fork). The reading side will not change
 it's file descriptor number, but the writing side might.
+
+=item $epipe->wait
+
+This method blocks the process until there are events on the pipe. This is
+not a very event-based or ncie way of usign an event pipe, but it can be
+occasionally useful.
 
 =back
 
 =cut
 
 1;
-
-=head1 EXAMPLE
-
-There really should be a complete C/XS example. Bug me about it. Better
-yet, create one.
 
 =head1 IMPLEMENTATION DETAILS AND LIMITATIONS
 

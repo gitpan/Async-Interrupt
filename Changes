@@ -1,5 +1,10 @@
 Revision history for Perl extension Async::Interrupt.
 
+1.0   Thu Jul 30 05:58:55 CEST 2009
+        - implement signal_hysteresis.
+        - implement scope_block_func.
+        - implement sig2name/sig2num convenience functions.
+
 0.6   Sat Jul 18 07:09:33 CEST 2009
 	- add autodrain setting.
         - added Async::Interrupt::EventPipe class.
@@ -7,7 +12,7 @@ Revision history for Perl extension Async::Interrupt.
           epipe state.
         - destroying asyncs inside their handler callback could lead
           to segfaults.
-        - destoying an interrupt object did not properly remove it
+        - destroying an interrupt object did not properly remove it
           from the asyncs list (classical case of side-effect-inside-assert).
 
 0.501 Fri Jul 17 16:58:51 CEST 2009

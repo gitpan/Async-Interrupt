@@ -34,6 +34,7 @@ typedef struct {
   SV *value;
   int signum;
   int autodrain;
+  ANY *scope_savestack;
   volatile int blocked;
 
   s_epipe ep;
@@ -41,6 +42,7 @@ typedef struct {
   atomic_t fd_enable;
   atomic_t pending;
   volatile IV *valuep;
+  atomic_t hysteresis;
 } async_t;
 
 static AV *asyncs;
@@ -48,6 +50,27 @@ static async_t *sig_async [SIG_SIZE];
 
 #define SvASYNC_nrv(sv) INT2PTR (async_t *, SvIVX (sv))
 #define SvASYNC(rv)     SvASYNC_nrv (SvRV (rv))
+
+static void async_signal (void *signal_arg, int value);
+
+static void
+setsig (int signum, void (*handler)(int))
+{
+#if _WIN32
+  signal (async->signum, handler);
+#else
+  struct sigaction sa;
+  sa.sa_handler = handler;
+  sigfillset (&sa.sa_mask);
+  sa.sa_flags = 0; /* if we interrupt a syscall, we might drain the pipe before it became ready */
+  sigaction (signum, &sa, 0);
+}
+
+static void
+async_sigsend (int signum)
+{
+  async_signal (sig_async [signum], 0);
+}
 
 /* the main workhorse to signal */
 static void
@@ -57,6 +80,9 @@ async_signal (void *signal_arg, int value)
 
   async_t *async = (async_t *)signal_arg;
   int pending = async->pending;
+
+  if (async->hysteresis)
+    setsig (async->signum, SIG_IGN);
 
   *async->valuep = value ? value : 1;
   async->pending = 1;
@@ -76,6 +102,10 @@ handle_async (async_t *async)
 
   *async->valuep = 0;
   async->pending = 0;
+
+  /* restore signal */
+  if (async->hysteresis)
+    setsig (async->signum, async_sigsend);
 
   /* drain pipe */
   if (async->fd_enable && async->ep.len && async->autodrain)
@@ -173,12 +203,6 @@ static Signal_t async_sighandler (int signum)
 }
 #endif
 
-static void
-async_sigsend (int signum)
-{
-  async_signal (sig_async [signum], 0);
-}
-
 #define block(async) ++(async)->blocked
 
 static void
@@ -193,10 +217,32 @@ static void
 scope_block_cb (pTHX_ void *async_sv)
 {
   async_t *async = SvASYNC_nrv ((SV *)async_sv);
+
+  async->scope_savestack = 0;
   unblock (async);
   SvREFCNT_dec (async_sv);
 }
 
+static void
+scope_block (SV *async_sv)
+{
+  async_t *async = SvASYNC_nrv (async_sv);
+
+  /* as a heuristic, we skip the scope block if we already are blocked */
+  /* and the existing scope block used the same savestack */
+
+  if (!async->scope_savestack || async->scope_savestack != PL_savestack)
+    {
+      async->scope_savestack = PL_savestack;
+      block (async);
+
+      LEAVE; /* unfortunately, perl sandwiches XS calls into ENTER/LEAVE */
+      SAVEDESTRUCTOR_X (scope_block_cb, (void *)SvREFCNT_inc (async_sv));
+      ENTER; /* unfortunately, perl sandwiches XS calls into ENTER/LEAVE */
+    }
+}
+
+#endif
 MODULE = Async::Interrupt		PACKAGE = Async::Interrupt
 
 BOOT:
@@ -258,19 +304,14 @@ _alloc (SV *cb, void *c_cb, void *c_arg, SV *fh_r, SV *fh_w, SV *signl, SV *pval
               croak ("Async::Interrupt::new got passed illegal signal name or number: %s", SvPV_nolen (signl));
 
             sig_async [async->signum] = async;
-#if _WIN32
-            signal (async->signum, async_sigsend);
-#else
-            {
-              struct sigaction sa;
-              sa.sa_handler = async_sigsend;
-              sigfillset (&sa.sa_mask);
-              sa.sa_flags = 0; /* if we interrupt a syscall, we might drain the pipe before it became ready */
-              sigaction (async->signum, &sa, 0);
-            }
-#endif
+            setsig (async->signum, async_sigsend);
           }
 }
+
+void
+signal_hysteresis (async_t *async, int enable)
+	CODE:
+        async->hysteresis = enable;
 
 void
 signal_func (async_t *async)
@@ -278,6 +319,13 @@ signal_func (async_t *async)
         EXTEND (SP, 2);
         PUSHs (sv_2mortal (newSViv (PTR2IV (async_signal))));
         PUSHs (sv_2mortal (newSViv (PTR2IV (async))));
+
+void
+scope_block_func (SV *self)
+	PPCODE:
+        EXTEND (SP, 2);
+        PUSHs (sv_2mortal (newSViv (PTR2IV (scope_block))));
+        PUSHs (sv_2mortal (newSViv (PTR2IV (SvRV (self)))));
 
 IV
 c_var (async_t *async)
@@ -304,15 +352,7 @@ unblock (async_t *async)
 void
 scope_block (SV *self)
 	CODE:
-{
-	SV *async_sv = SvRV (self);
-        async_t *async = SvASYNC_nrv (async_sv);
-        block (async);
-
-        LEAVE; /* unfortunately, perl sandwiches XS calls into ENTER/LEAVE */
-        SAVEDESTRUCTOR_X (scope_block_cb, (void *)SvREFCNT_inc (async_sv));
-        ENTER; /* unfortunately, perl sandwiches XS calls into ENTER/LEAVE */
-}
+        scope_block (SvRV (self));
 
 void
 pipe_enable (async_t *async)
@@ -388,19 +428,7 @@ DESTROY (SV *self)
 	found:
 
         if (async->signum)
-          {
-#if _WIN32
-            signal (async->signum, SIG_DFL);
-#else
-            {
-              struct sigaction sa;
-              sa.sa_handler = SIG_DFL;
-              sigemptyset (&sa.sa_mask);
-              sa.sa_flags = 0;
-              sigaction (async->signum, &sa, 0);
-            }
-#endif
-          }
+          setsig (async->signum, SIG_DFL);
 
         if (!async->fh_r && async->ep.len)
           s_epipe_destroy (&async->ep);
@@ -412,6 +440,25 @@ DESTROY (SV *self)
 
         Safefree (async);
 }
+
+SV *
+sig2num (SV *signame_or_number)
+	ALIAS:
+        sig2num  = 0
+        sig2name = 1
+	CODE:
+{
+  	int signum = s_signum (signame_or_number);
+
+        if (signum < 0)
+          RETVAL = &PL_sv_undef;
+        else if (ix)
+          RETVAL = newSVpv (PL_sig_name [signum], 0);
+        else
+          RETVAL = newSViv (signum);
+}
+        OUTPUT:
+        RETVAL
 
 MODULE = Async::Interrupt		PACKAGE = Async::Interrupt::EventPipe		PREFIX = s_epipe_
 
@@ -459,6 +506,16 @@ s_epipe_signal (s_epipe *epp)
 
 void
 s_epipe_drain (s_epipe *epp)
+
+void
+drain_func (s_epipe *epp)
+	PPCODE:
+        EXTEND (SP, 2);
+        PUSHs (sv_2mortal (newSViv (PTR2IV (s_epipe_drain))));
+        PUSHs (sv_2mortal (newSViv (PTR2IV (epp))));
+
+void
+s_epipe_wait (s_epipe *epp)
 
 void
 DESTROY (s_epipe *epp)
