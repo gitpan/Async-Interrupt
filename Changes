@@ -1,5 +1,8 @@
 Revision history for Perl extension Async::Interrupt.
 
+1.01  Wed Aug  5 13:50:59 CEST 2009
+	- evpipe->wait did immediately return on !windows.
+
 1.0   Thu Jul 30 05:58:55 CEST 2009
         - implement signal_hysteresis.
         - implement scope_block_func.
