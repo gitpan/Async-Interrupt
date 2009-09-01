@@ -446,6 +446,7 @@ sig2num (SV *signame_or_number)
 	ALIAS:
         sig2num  = 0
         sig2name = 1
+        PROTOTYPE: $
 	CODE:
 {
   	int signum = s_signum (signame_or_number);

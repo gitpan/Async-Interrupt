@@ -1,5 +1,8 @@
 Revision history for Perl extension Async::Interrupt.
 
+1.02  Tue Sep  1 18:41:09 CEST 2009
+	- prototypes for sig2name/sig2num were missing.
+
 1.01  Wed Aug  5 13:50:59 CEST 2009
 	- evpipe->wait did immediately return on !windows.
 
