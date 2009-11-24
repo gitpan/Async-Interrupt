@@ -467,7 +467,7 @@ THE Async::Interrupt CLASS
         They will return "undef" on illegal names or numbers.
 
 THE Async::Interrupt::EventPipe CLASS
-    Pipes are the predominent utility to make asynchronous signals
+    Pipes are the predominant utility to make asynchronous signals
     synchronous. However, pipes are hard to come by: they don't exist on the
     broken windows platform, and on GNU/Linux systems, you might want to use
     an "eventfd" instead.

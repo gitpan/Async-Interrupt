@@ -238,7 +238,7 @@ BEGIN {
    # etc. will be null pointers.
    $SIG{KILL} = sub { };
 
-   our $VERSION = '1.02';
+   our $VERSION = '1.03';
 
    require XSLoader;
    XSLoader::load ("Async::Interrupt", $VERSION);
@@ -538,7 +538,7 @@ They will return C<undef> on illegal names or numbers.
 
 =head1 THE Async::Interrupt::EventPipe CLASS
 
-Pipes are the predominent utility to make asynchronous signals
+Pipes are the predominant utility to make asynchronous signals
 synchronous. However, pipes are hard to come by: they don't exist on the
 broken windows platform, and on GNU/Linux systems, you might want to use
 an C<eventfd> instead.

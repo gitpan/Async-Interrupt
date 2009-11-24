@@ -57,13 +57,14 @@ static void
 setsig (int signum, void (*handler)(int))
 {
 #if _WIN32
-  signal (async->signum, handler);
+  signal (signum, handler);
 #else
   struct sigaction sa;
   sa.sa_handler = handler;
   sigfillset (&sa.sa_mask);
   sa.sa_flags = 0; /* if we interrupt a syscall, we might drain the pipe before it became ready */
   sigaction (signum, &sa, 0);
+#endif
 }
 
 static void
@@ -242,7 +243,6 @@ scope_block (SV *async_sv)
     }
 }
 
-#endif
 MODULE = Async::Interrupt		PACKAGE = Async::Interrupt
 
 BOOT:
@@ -468,7 +468,6 @@ new (const char *klass)
 	PPCODE:
 {
   	s_epipe *epp;
-        SV *self;
 
         Newz (0, epp, 1, s_epipe);
         XPUSHs (sv_setref_iv (sv_newmortal (), klass, PTR2IV (epp)));
