@@ -238,7 +238,7 @@ BEGIN {
    # etc. will be null pointers.
    $SIG{KILL} = sub { };
 
-   our $VERSION = '1.03';
+   our $VERSION = '1.04';
 
    require XSLoader;
    XSLoader::load ("Async::Interrupt", $VERSION);
