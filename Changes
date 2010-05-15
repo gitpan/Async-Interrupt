@@ -1,5 +1,8 @@
 Revision history for Perl extension Async::Interrupt.
 
+1.05  Sat May 15 02:06:33 CEST 2010
+	- implement $epipe->signal_func method.
+
 1.04  Wed Mar 31 02:46:49 CEST 2010
         - a double fork partially killed the event pipe (great testcase
           by dormando). affects IO::AIO, BDB and Async::Interrupt.

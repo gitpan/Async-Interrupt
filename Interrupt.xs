@@ -508,10 +508,12 @@ void
 s_epipe_drain (s_epipe *epp)
 
 void
-drain_func (s_epipe *epp)
+signal_func (s_epipe *epp)
+	ALIAS:
+        drain_func = 1
 	PPCODE:
         EXTEND (SP, 2);
-        PUSHs (sv_2mortal (newSViv (PTR2IV (s_epipe_drain))));
+        PUSHs (sv_2mortal (newSViv (PTR2IV (ix ? s_epipe_drain : s_epipe_signal))));
         PUSHs (sv_2mortal (newSViv (PTR2IV (epp))));
 
 void

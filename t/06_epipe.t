@@ -2,7 +2,7 @@
 
 no warnings;
 
-print "1..4\n"; $|=1;
+print "1..6\n"; $|=1;
 
 use Async::Interrupt;
 
@@ -27,3 +27,6 @@ $ep->drain;
 
 my $n = select $vR=$vr, undef, undef, 0;
 print $n == 0 ? "" : "not ", "ok 4 # $n\n";
+
+print "ok 5 # ", join " ", $ep->signal_func, "\n";
+print "ok 6 # ", join " ", $ep->drain_func, "\n";

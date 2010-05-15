@@ -235,10 +235,10 @@ use common::sense;
 BEGIN {
    # the next line forces initialisation of internal
    # signal handling variables, otherwise, PL_sig_pending
-   # etc. will be null pointers.
+   # etc. might be null pointers.
    $SIG{KILL} = sub { };
 
-   our $VERSION = '1.04';
+   our $VERSION = '1.05';
 
    require XSLoader;
    XSLoader::load ("Async::Interrupt", $VERSION);
@@ -578,13 +578,16 @@ Write something to the pipe, in a portable fashion.
 
 Drain (empty) the pipe.
 
+=item ($c_func, $c_arg) = $epipe->signal_func
+
 =item ($c_func, $c_arg) = $epipe->drain_func
 
-Returns a function pointer and C<void *> argument that can be called to
-have the effect of C<< $epipe->drain >> on the XS level.
+These two methods returns a function pointer and C<void *> argument
+that can be called to have the effect of C<< $epipe->signal >> or C<<
+$epipe->drain >>, respectively, on the XS level.
 
-It has the following prototype and needs to be passed the specified
-C<$c_arg>, which is a C<void *> cast to C<IV>:
+They both have the following prototype and need to be passed their
+C<$c_arg>, which is a C<void *> cast to an C<IV>:
 
    void (*c_func) (void *c_arg)
 

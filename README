@@ -501,12 +501,14 @@ THE Async::Interrupt::EventPipe CLASS
     $epipe->drain
         Drain (empty) the pipe.
 
+    ($c_func, $c_arg) = $epipe->signal_func
     ($c_func, $c_arg) = $epipe->drain_func
-        Returns a function pointer and "void *" argument that can be called
-        to have the effect of "$epipe->drain" on the XS level.
+        These two methods returns a function pointer and "void *" argument
+        that can be called to have the effect of "$epipe->signal" or
+        "$epipe->drain", respectively, on the XS level.
 
-        It has the following prototype and needs to be passed the specified
-        $c_arg, which is a "void *" cast to "IV":
+        They both have the following prototype and need to be passed their
+        $c_arg, which is a "void *" cast to an "IV":
 
            void (*c_func) (void *c_arg)
 
