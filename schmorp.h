@@ -3,12 +3,17 @@
 
 /* WARNING
  * This header file is a shared resource between many modules.
+ * perl header files MUST already be included.
  */
 
 #include <signal.h>
 #include <errno.h>
 
-#ifndef _WIN32
+#if defined(WIN32 ) || defined(_MINIX)
+# define SCHMORP_H_PREFER_SELECT 1
+#endif
+
+#if !SCHMORP_H_PREFER_SELECT
 # include <poll.h>
 #endif
 
@@ -46,6 +51,32 @@
 #  define IS_PADCONST(v) 0
 # endif
 #endif
+
+/* use NV for 32 bit perls as it allows larger offsets */
+#if IVSIZE >= 8
+typedef IV VAL64;
+# define SvVAL64(sv) SvIV (sv)
+# define newSVval64(i64) newSViv (i64)
+#else
+typedef NV VAL64;
+# define SvVAL64(sv) SvNV (sv)
+# define newSVval64(i64) newSVnv (i64)
+#endif
+
+/* typemap for the above */
+/*
+VAL64		T_VAL64
+
+INPUT
+
+T_VAL64
+	$var = ($type)SvVAL64 ($arg);
+
+OUTPUT
+
+T_VAL64
+	$arg = newSVval64 ($var);
+*/
 
 /* 5.11 */
 #ifndef CxHASARGS
@@ -329,6 +360,7 @@ s_fd_prepare (int fd)
 #endif
 
 #if __linux && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 7))
+# define SCHMORP_H_HAVE_EVENTFD 1
 /* our minimum requirement is glibc 2.7 which has the stub, but not the header */
 # include <stdint.h>
 # ifdef __cplusplus
@@ -406,7 +438,11 @@ s_epipe_signal (s_epipe *epp)
   DWORD dummy;
   WriteFile (S_TO_HANDLE (epp->fd [1]), (LPCVOID)&dummy, 1, &dummy, 0);
 #else
+# if SCHMORP_H_HAVE_EVENTFD
   static uint64_t counter = 1;
+# else
+  static char counter [8];
+# endif
   /* some modules accept fd's from outside, support eventfd here */
   if (write (epp->fd [1], &counter, epp->len) < 0
       && errno == EINVAL
@@ -465,7 +501,7 @@ static int
 s_epipe_wait (s_epipe *epp)
 {
   dTHX;
-#ifdef _WIN32
+#if SCHMORP_H_PREFER_SELECT
   fd_set rfd;
   int fd = s_epipe_fd (epp);
 

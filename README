@@ -362,6 +362,22 @@ THE Async::Interrupt CLASS
         $value must be in the valid range for a "sig_atomic_t", except 0
         (1..127 is portable).
 
+    $async->handle
+        Calls the callback if the object is pending.
+
+        This method does not need to be called normally, as it will be
+        invoked automatically. However, it can be used to force handling of
+        outstanding interrupts while the object is blocked.
+
+        One reason why one might want to do that is when you want to switch
+        from asynchronous interruptions to synchronous one, using e.g. an
+        event loop. To do that, one would first "$async->block" the
+        interrupt object, then register a read watcher on the "pipe_fileno"
+        that calls "$async->handle".
+
+        This disables asynchronous interruptions, but ensures that
+        interrupts are handled by the event loop.
+
     $async->signal_hysteresis ($enable)
         Enables or disables signal hysteresis (default: disabled). If a
         POSIX signal is used as a signal source for the interrupt object,
@@ -374,7 +390,7 @@ THE Async::Interrupt CLASS
         invocations considerably, at the cost of two extra syscalls.
 
         Note that setting the signal to "SIG_IGN" can have unintended side
-        effects when you fork and exec other programs, as often they do nto
+        effects when you fork and exec other programs, as often they do not
         expect signals to be ignored by default.
 
     $async->block
@@ -432,7 +448,7 @@ THE Async::Interrupt CLASS
         pipe is currently attached to the object, it will dynamically create
         one.
 
-        Note that the only valid oepration on this file descriptor is to
+        Note that the only valid operation on this file descriptor is to
         wait until it is readable. The fd might belong currently to a pipe,
         a tcp socket, or an eventfd, depending on the platform, and is
         guaranteed to be "select"able.
@@ -445,6 +461,10 @@ THE Async::Interrupt CLASS
 
         This is useful when you want to share one pipe among many
         Async::Interrupt objects.
+
+    $async->pipe_drain
+        Drains the pipe manually, for example, when autodrain is disabled.
+        Does nothing when no pipe is enabled.
 
     $async->post_fork
         The object will not normally be usable after a fork (as the pipe fd

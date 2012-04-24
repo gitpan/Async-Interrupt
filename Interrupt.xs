@@ -2,6 +2,7 @@
 #include "perl.h"
 #include "XSUB.h"
 
+#include "ecb.h"
 #include "schmorp.h"
 
 typedef volatile sig_atomic_t atomic_t;
@@ -86,10 +87,19 @@ async_signal (void *signal_arg, int value)
     setsig (async->signum, SIG_IGN);
 
   *async->valuep = value ? value : 1;
+  ECB_MEMORY_FENCE_RELEASE;
   async->pending = 1;
+  ECB_MEMORY_FENCE_RELEASE;
   async_pending  = 1;
-  psig_pend [9]  = 1;
-  *sig_pending   = 1;
+  ECB_MEMORY_FENCE_RELEASE;
+
+  if (!async->blocked)
+    {
+      psig_pend [9]  = 1;
+      ECB_MEMORY_FENCE_RELEASE;
+      *sig_pending   = 1;
+      ECB_MEMORY_FENCE_RELEASE;
+    }
 
   if (!pending && async->fd_enable && async->ep.len)
     s_epipe_signal (&async->ep);
@@ -164,6 +174,8 @@ static void
 handle_asyncs (void)
 {
   int i;
+
+  ECB_MEMORY_FENCE_ACQUIRE;
 
   async_pending = 0;
 
@@ -260,7 +272,7 @@ _alloc (SV *cb, void *c_cb, void *c_arg, SV *fh_r, SV *fh_w, SV *signl, SV *pval
 	PPCODE:
 {
         SV *cv   = SvOK (cb) ? SvREFCNT_inc (s_get_cv_croak (cb)) : 0;
-  	async_t *async;
+	async_t *async;
 
         Newz (0, async, 1, async_t);
 
@@ -335,6 +347,11 @@ c_var (async_t *async)
         RETVAL
 
 void
+handle (async_t *async)
+	CODE:
+        handle_async (async);
+
+void
 signal (async_t *async, int value = 1)
 	CODE:
         async_signal (async, value);
@@ -357,7 +374,7 @@ scope_block (SV *self)
 void
 pipe_enable (async_t *async)
 	ALIAS:
-        pipe_enable = 1
+        pipe_enable  = 1
         pipe_disable = 0
 	CODE:
         async->fd_enable = ix;
@@ -392,11 +409,17 @@ pipe_autodrain (async_t *async, int enable = -1)
         RETVAL
 
 void
+pipe_drain (async_t *async)
+	CODE:
+        if (async->ep.len)
+          s_epipe_drain (&async->ep);
+
+void
 post_fork (async_t *async)
 	CODE:
         if (async->ep.len)
           {
-  	    int res;
+	    int res;
 
             /*block (async);*//*TODO*/
             res = s_epipe_renew (&async->ep);
@@ -410,9 +433,9 @@ void
 DESTROY (SV *self)
 	CODE:
 {
-  	int i;
-  	SV *async_sv = SvRV (self);
-  	async_t *async = SvASYNC_nrv (async_sv);
+	int i;
+	SV *async_sv = SvRV (self);
+	async_t *async = SvASYNC_nrv (async_sv);
 
         for (i = AvFILLp (asyncs); i >= 0; --i)
           if (AvARRAY (asyncs)[i] == async_sv)

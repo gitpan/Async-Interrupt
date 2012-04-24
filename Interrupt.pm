@@ -238,7 +238,7 @@ BEGIN {
    # etc. might be null pointers.
    $SIG{KILL} = sub { };
 
-   our $VERSION = '1.05';
+   our $VERSION = '1.1';
 
    require XSLoader;
    XSLoader::load ("Async::Interrupt", $VERSION);
@@ -421,6 +421,23 @@ might imply, do anything with POSIX signals).
 C<$value> must be in the valid range for a C<sig_atomic_t>, except C<0>
 (1..127 is portable).
 
+=item $async->handle
+
+Calls the callback if the object is pending.
+
+This method does not need to be called normally, as it will be invoked
+automatically. However, it can be used to force handling of outstanding
+interrupts while the object is blocked.
+
+One reason why one might want to do that is when you want to switch
+from asynchronous interruptions to synchronous one, using e.g. an event
+loop. To do that, one would first C<< $async->block >> the interrupt
+object, then register a read watcher on the C<pipe_fileno> that calls C<<
+$async->handle >>.
+
+This disables asynchronous interruptions, but ensures that interrupts are
+handled by the event loop.
+
 =item $async->signal_hysteresis ($enable)
 
 Enables or disables signal hysteresis (default: disabled). If a POSIX
@@ -434,7 +451,7 @@ signal hysteresis can reduce the number of handler invocations
 considerably, at the cost of two extra syscalls.
 
 Note that setting the signal to C<SIG_IGN> can have unintended side
-effects when you fork and exec other programs, as often they do nto expect
+effects when you fork and exec other programs, as often they do not expect
 signals to be ignored by default.
 
 =item $async->block
@@ -497,7 +514,7 @@ soon as I realize why this is a mistake.
 Returns the reading side of the signalling pipe. If no signalling pipe is
 currently attached to the object, it will dynamically create one.
 
-Note that the only valid oepration on this file descriptor is to wait
+Note that the only valid operation on this file descriptor is to wait
 until it is readable. The fd might belong currently to a pipe, a tcp
 socket, or an eventfd, depending on the platform, and is guaranteed to be
 C<select>able.
@@ -511,6 +528,11 @@ draining.
 
 This is useful when you want to share one pipe among many Async::Interrupt
 objects.
+
+=item $async->pipe_drain
+
+Drains the pipe manually, for example, when autodrain is disabled. Does
+nothing when no pipe is enabled.
 
 =item $async->post_fork
 

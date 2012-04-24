@@ -1,5 +1,11 @@
 Revision history for Perl extension Async::Interrupt.
 
+1.1   Wed Apr 25 00:46:08 CEST 2012
+	- new $async->handle method.
+	- new $async->pipe_drain method.
+        - use memory fences for !x86, and x86 future
+          proofing. use libecb for implementation.
+
 1.05  Sat May 15 02:06:33 CEST 2010
 	- implement $epipe->signal_func method.
 
