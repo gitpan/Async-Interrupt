@@ -116,7 +116,7 @@ synchronous signals (i.e. when the event loop polls), which is why the
 pipe draining is not done automatically.
 
    my $interrupt = new Async::Interrupt
-      cb             => sub { undef $SIGNAL_RECEIVED{$signum} }
+      cb             => sub { undef $SIGNAL_RECEIVED{$signum} },
       signal         => $signum,
       pipe           => [$SIGPIPE->filenos],
       pipe_autodrain => 0,
@@ -238,7 +238,7 @@ BEGIN {
    # etc. might be null pointers.
    $SIG{KILL} = sub { };
 
-   our $VERSION = '1.1';
+   our $VERSION = '1.2';
 
    require XSLoader;
    XSLoader::load ("Async::Interrupt", $VERSION);

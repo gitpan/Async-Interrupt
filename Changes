@@ -1,5 +1,11 @@
 Revision history for Perl extension Async::Interrupt.
 
+1.2   Fri Apr 11 06:22:38 CEST 2014
+	- perl5porters broke Async::Interrupt, BDB, EV, IO::AIO, OpenCL
+          without warning by switching the meaning of USE_SOCKETS_AS_HANDLES
+          in 5.18. What's so attractive about giving a shit about backwards
+          compatibility - I will never understand.
+
 1.1   Wed Apr 25 00:46:08 CEST 2012
 	- new $async->handle method.
 	- new $async->pipe_drain method.

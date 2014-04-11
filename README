@@ -104,7 +104,7 @@ USAGE EXAMPLES
     pipe draining is not done automatically.
 
        my $interrupt = new Async::Interrupt
-          cb             => sub { undef $SIGNAL_RECEIVED{$signum} }
+          cb             => sub { undef $SIGNAL_RECEIVED{$signum} },
           signal         => $signum,
           pipe           => [$SIGPIPE->filenos],
           pipe_autodrain => 0,
